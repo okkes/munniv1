@@ -1,0 +1,203 @@
+# munni production stack for Synology NAS (Container Manager project).
+# Secrets come from ./env/.env.local (git-ignored) — copy env/.env.example.
+# DSM reverse proxy terminates HTTPS on *.<your-domain> and forwards:
+#   munni.        -> web:80
+#   munni-api.    -> api:8080
+#   munni-admin.  -> admin:80      (restrict to LAN in DSM firewall)
+#   logto.        -> logto:3001
+#   logto-admin.  -> logto:3002   (restrict to LAN in DSM firewall)
+#   glitchtip.    -> glitchtip:8000
+
+services:
+  web:
+    image: ${REGISTRY:-ghcr.io/okkes}/munni-web:${TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "8090:80"
+
+  # operator console (munni-admin.) — keep the reverse-proxy entry LAN-only
+  admin:
+    image: ${REGISTRY:-ghcr.io/okkes}/munni-admin:${TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "8085:80"
+
+  api:
+    image: ${REGISTRY:-ghcr.io/okkes}/munni-api:${TAG:-latest}
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Db: Host=postgres;Database=munni;Username=munni;Password=${POSTGRES_PASSWORD}
+      Db__AutoMigrate: "true"
+      Auth__Authority: https://logto.${DOMAIN}/oidc
+      Auth__Audience: ${LOGTO_API_RESOURCE}
+      Cors__Origins__0: https://munni.${DOMAIN}
+      Cors__Origins__1: https://munni-admin.${DOMAIN}
+      # native shells: the webview origin is not the hosted web origin
+      # (Android WebView / iOS WKWebView respectively)
+      Cors__Origins__2: https://localhost
+      Cors__Origins__3: capacitor://localhost
+      GoCardless__SecretId: ${GOCARDLESS_SECRET_ID}
+      GoCardless__SecretKey: ${GOCARDLESS_SECRET_KEY}
+      # Enable Banking (free-for-personal alternative; the admin console
+      # picks which provider serves new consents)
+      EnableBanking__ApplicationId: ${ENABLEBANKING_APPLICATION_ID:-}
+      EnableBanking__PrivateKeyPem: ${ENABLEBANKING_PRIVATE_KEY_PEM:-}
+      Push__VapidPublicKey: ${PUSH_VAPID_PUBLIC_KEY:-}
+      Push__VapidPrivateKey: ${PUSH_VAPID_PRIVATE_KEY:-}
+      Push__Subject: ${PUSH_VAPID_SUBJECT:-mailto:admin@localhost}
+      # native shell push (FCM HTTP v1) — the Firebase service-account key file, as one line
+      Fcm__ServiceAccountJson: ${FCM_SERVICE_ACCOUNT_JSON:-}
+      # logo.dev brand search for recurring costs (optional)
+      Logos__SecretKey: ${LOGODEV_SECRET_KEY:-}
+      Logos__PublicToken: ${LOGODEV_PUBLIC_TOKEN:-}
+      # comma-separated OIDC subs that may open the in-app admin area
+      Admin__Subs: ${ADMIN_SUBS:-}
+      Sentry__Dsn: ${API_SENTRY_DSN:-}
+      # account deletion needs the Logto Management API (M2M app)
+      Logto__M2mAppId: ${LOGTO_M2M_APP_ID:-}
+      Logto__M2mAppSecret: ${LOGTO_M2M_APP_SECRET:-}
+      BUILD_NUMBER: ${TAG:-latest}
+      Ocr__BaseUrl: http://ocr:8884
+      # watch-folder importer: drop CAMT.053 exports into the mounted
+      # folder and they ingest as the owner's feeds (empty sub = off)
+      ImportWatch__Path: /import-watch
+      ImportWatch__OwnerSub: ${IMPORT_WATCH_OWNER_SUB:-}
+    ports:
+      - "8091:8080"
+    volumes:
+      - ${IMPORT_WATCH_HOST_DIR:-./import-watch}:/import-watch
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # receipt-photo OCR sidecar (receipts design): internal-only — no port
+  # mapping, only the api reaches it; stateless, stores nothing
+  ocr:
+    image: hertzg/tesseract-server:latest
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: munni
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: munni
+    volumes:
+      - pgdata18:/var/lib/postgresql
+      # creates the logto + glitchtip databases on first start
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U munni"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  logto:
+    image: svhd/logto:1.42
+    restart: unless-stopped
+    entrypoint: ["sh", "-c", "npm run alteration deploy latest || true; npm run cli db seed -- --swe && npm run alteration deploy latest && npm start"]
+    environment:
+      TRUST_PROXY_HEADER: "1"
+      DB_URL: postgres://munni:${POSTGRES_PASSWORD}@postgres:5432/logto
+      ENDPOINT: https://logto.${DOMAIN}
+      ADMIN_ENDPOINT: https://logto-admin.${DOMAIN}
+    # core validates admin-console tokens by fetching its own
+    # ADMIN_ENDPOINT well-known. Pin those hostnames to the host gateway
+    # so the request reaches DSM nginx from the stable docker bridge
+    # range (172.16.0.0/12 — allow it in the access profile) instead of
+    # a hairpinned public IP that rotates out of the allow list (broke
+    # the admin console with 403→500 on 2026-07-17).
+    extra_hosts:
+      - "logto.${DOMAIN}:host-gateway"
+      - "logto-admin.${DOMAIN}:host-gateway"
+    ports:
+      - "3001:3001"
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # one-shot: creates/updates GlitchTip's schema before web+worker start —
+  # without it every login/beat query fails with "relation ... does not exist"
+  glitchtip-migrate:
+    image: glitchtip/glitchtip:latest
+    restart: "no"
+    # manage.py is stable across releases; the bin/ wrapper was renamed
+    # in 2026 (run-migrations.sh -> run-migrate.sh) and broke the stack
+    command: ./manage.py migrate
+    environment: &glitchtip_env
+      DATABASE_URL: postgres://munni:${POSTGRES_PASSWORD}@postgres:5432/glitchtip
+      REDIS_URL: redis://valkey:6379/0
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY}
+      GLITCHTIP_DOMAIN: https://glitchtip.${DOMAIN}
+      EMAIL_URL: ${GLITCHTIP_EMAIL_URL:-consolemail://}
+      CELERY_WORKER_AUTOSCALE: "1,3"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  glitchtip:
+    image: glitchtip/glitchtip:latest
+    restart: unless-stopped
+    environment: *glitchtip_env
+    ports:
+      - "8092:8000"
+    depends_on:
+      glitchtip-migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_started
+
+  glitchtip-worker:
+    image: glitchtip/glitchtip:latest
+    restart: unless-stopped
+    command: ./bin/run-celery-with-beat.sh
+    environment: *glitchtip_env
+    depends_on:
+      glitchtip-migrate:
+        condition: service_completed_successfully
+      glitchtip:
+        condition: service_started
+
+  valkey:
+    image: valkey/valkey:9-alpine
+    restart: unless-stopped
+
+  # database inspector for the operator. Reverse-proxy pgadmin.<domain>
+  # -> localhost:8093 and RESTRICT TO LAN in the DSM firewall — it can
+  # read every database (munni, logto, glitchtip).
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    restart: unless-stopped
+    environment:
+      # default must be a resolvable-TLD address — pgadmin refuses .local
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@munni.dev}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?set PGADMIN_PASSWORD in .env}
+    ports:
+      - "8093:80"
+    volumes:
+      - pgadmin:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # nightly logical backup into a folder Hyper Backup picks up
+  db-backup:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    entrypoint: ["sh", "-c", "while true; do pg_dumpall -h postgres -U munni > /backups/munni-$(date +%F).sql && find /backups -name '*.sql' -mtime +14 -delete; sleep 86400; done"]
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  # pg 17 data, kept as the 17->18 rollback (update.sh migrated 2026-07-17)
+  pgdata:
+  pgdata18:
+  pgadmin:

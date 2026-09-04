@@ -1,0 +1,13 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "app.munni.dev",
+      "sha256_cert_fingerprints": [
+        "6D:13:58:A4:BE:38:D1:EB:09:53:44:6A:42:84:B3:D5:3D:52:0D:45:01:DD:EE:D1:05:F0:93:DC:B0:B7:AB:54",
+        "B3:AC:BC:B2:54:C6:ED:51:15:36:74:04:AA:75:AA:02:06:06:00:4E:DA:E8:E6:83:61:2B:0D:2F:AD:25:91:FE"
+      ]
+    }
+  }
+]

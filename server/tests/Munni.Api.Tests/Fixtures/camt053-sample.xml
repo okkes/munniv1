@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.02">
+  <BkToCstmrStmt>
+    <GrpHdr><MsgId>MSG-GALLERY-1</MsgId><CreDtTm>2026-07-01T00:30:00</CreDtTm></GrpHdr>
+    <Stmt>
+      <Id>STMT-DEMO-MAIN</Id>
+      <Acct><Id><IBAN>NL00DEMO0000000100</IBAN></Id><Ccy>EUR</Ccy></Acct>
+      <Bal>
+        <Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp>
+        <Amt Ccy="EUR">3390.55</Amt><CdtDbtInd>CRDT</CdtDbtInd>
+      </Bal>
+      <Ntry>
+        <Amt Ccy="EUR">30.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts>BOOK</Sts>
+        <BookgDt><Dt>2026-07-04</Dt></BookgDt>
+        <AcctSvcrRef>GALLERY-REF-001</AcctSvcrRef>
+        <NtryDtls><TxDtls>
+          <RltdPties>
+            <Cdtr><Nm>Jumbo Amsterdam</Nm></Cdtr>
+            <CdtrAcct><Id><IBAN>NL00JUMB0000000001</IBAN></Id></CdtrAcct>
+          </RltdPties>
+          <RmtInf><Ustrd>JUMBO 512 AMSTERDAM Betaalautomaat</Ustrd></RmtInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+      <Ntry>
+        <Amt Ccy="EUR">15.75</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts>BOOK</Sts>
+        <BookgDt><Dt>2026-07-05</Dt></BookgDt>
+        <AcctSvcrRef>GALLERY-REF-002</AcctSvcrRef>
+        <NtryDtls><TxDtls>
+          <RltdPties><Cdtr><Nm>Onbekende Winkel XQZ</Nm></Cdtr></RltdPties>
+          <RmtInf><Ustrd>XQZ 9999 QWERTYUIOP</Ustrd></RmtInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+    </Stmt>
+    <Stmt>
+      <Id>STMT-NEW-ACCT</Id>
+      <Acct><Id><IBAN>NL91ABNA0417164300</IBAN></Id><Ccy>EUR</Ccy></Acct>
+      <Bal>
+        <Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp>
+        <Amt Ccy="EUR">500.00</Amt><CdtDbtInd>CRDT</CdtDbtInd>
+      </Bal>
+      <Ntry>
+        <Amt Ccy="EUR">2200.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts>BOOK</Sts>
+        <BookgDt><Dt>2026-06-25</Dt></BookgDt>
+        <AcctSvcrRef>GALLERY-REF-003</AcctSvcrRef>
+        <NtryDtls><TxDtls>
+          <RltdPties><Dbtr><Nm>Werkgever BV</Nm></Dbtr></RltdPties>
+          <RmtInf><Ustrd>SALARIS JUNI 2026</Ustrd></RmtInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+    </Stmt>
+  </BkToCstmrStmt>
+</Document>

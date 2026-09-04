@@ -1,0 +1,88 @@
+# One-time (rerunnable) helper: mints a persistent Apple Development
+# certificate WITHOUT a Mac — openssl makes the key + CSR, the App Store
+# Connect API signs it, and the encrypted .p12 lands as a build artifact.
+# Afterwards store the artifact's content as the APPLE_DEV_CERT_P12
+# secret (`gh secret set`) — the iOS workflow then stops minting throwaway
+# certs and Apple's "certificate revoked" emails stop (native-setup §5b).
+#
+# The p12 is encrypted with the APPLE_DEV_CERT_PASSWORD secret, which
+# must exist BEFORE dispatching. The private key never appears in logs.
+name: Mint Apple signing certificate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mint:
+    # macOS: its LibreSSL writes p12s Apple's security tool actually
+    # reads, and the same run PROVES the import works before the file
+    # ever becomes a secret (the ubuntu/OpenSSL-3 attempt shipped a p12
+    # that `security import` rejected)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Preflight
+        run: |
+          if [ -z "$ASC_KEY_B64" ] || [ -z "$P12_PASSWORD" ]; then
+            echo "::error::ASC_KEY_P8 and APPLE_DEV_CERT_PASSWORD secrets are required"
+            exit 1
+          fi
+          echo "$ASC_KEY_B64" | base64 -d > "$RUNNER_TEMP/asc.p8"
+        env:
+          ASC_KEY_B64: ${{ secrets.ASC_KEY_P8 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DEV_CERT_PASSWORD }}
+
+      - name: Key + CSR (openssl, no Mac involved)
+        run: |
+          openssl genrsa -out "$RUNNER_TEMP/dev.key" 2048
+          openssl req -new -key "$RUNNER_TEMP/dev.key" \
+            -subj "/CN=munni CI Development/O=munni" \
+            -out "$RUNNER_TEMP/dev.csr"
+
+      - name: Clear existing Development certificates (Apple allows one current)
+        run: node .github/scripts/asc-prune.js
+        env:
+          KEEP_NEWEST: '0'
+          ASC_KEY_PATH: ${{ runner.temp }}/asc.p8
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+
+      - name: Ask App Store Connect to sign it
+        run: |
+          node .github/scripts/asc-mint-cert.js "$RUNNER_TEMP/dev.csr" > "$RUNNER_TEMP/cert.b64"
+          base64 -d < "$RUNNER_TEMP/cert.b64" > "$RUNNER_TEMP/dev.der" # BSD base64: stdin only
+          openssl x509 -inform DER -in "$RUNNER_TEMP/dev.der" -out "$RUNNER_TEMP/dev.pem"
+          openssl x509 -in "$RUNNER_TEMP/dev.pem" -noout -subject -enddate
+        env:
+          ASC_KEY_PATH: ${{ runner.temp }}/asc.p8
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+
+      - name: Bundle the encrypted p12 (base64, secret-ready)
+        run: |
+          openssl pkcs12 -export \
+            -inkey "$RUNNER_TEMP/dev.key" \
+            -in "$RUNNER_TEMP/dev.pem" \
+            -name "munni CI Development" \
+            -passout env:P12_PASSWORD \
+            -out "$RUNNER_TEMP/dev.p12"
+          # prove the exact bytes + password open in a keychain BEFORE
+          # they become the secret — no more mint-then-discover cycles
+          security create-keychain -p ci "$RUNNER_TEMP/verify.keychain-db"
+          security import "$RUNNER_TEMP/dev.p12" -k "$RUNNER_TEMP/verify.keychain-db" -P "$P12_PASSWORD" -A -f pkcs12
+          security find-identity -v "$RUNNER_TEMP/verify.keychain-db" || true
+          mkdir -p out
+          base64 -i "$RUNNER_TEMP/dev.p12" | tr -d '\n' > out/APPLE_DEV_CERT_P12.b64
+        env:
+          P12_PASSWORD: ${{ secrets.APPLE_DEV_CERT_PASSWORD }}
+
+      - name: Upload (download → gh secret set APPLE_DEV_CERT_P12 < file)
+        uses: actions/upload-artifact@v7
+        with:
+          name: apple-dev-cert-p12
+          path: out/APPLE_DEV_CERT_P12.b64
+          retention-days: 1
