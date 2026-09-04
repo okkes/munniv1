@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>munni — wireframes</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #f0eee9; font-family: -apple-system, system-ui, sans-serif; }
+  .annot-layer { position: absolute; inset: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="ios-frame.jsx"></script>
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+
+<script type="text/babel" src="wf-primitives.jsx"></script>
+<script type="text/babel" src="wf-screens-auth.jsx"></script>
+<script type="text/babel" src="wf-screens-home.jsx"></script>
+<script type="text/babel" src="wf-screens-tx.jsx"></script>
+<script type="text/babel" src="wf-screens-rest.jsx"></script>
+<script type="text/babel" src="wf-screens-budgets.jsx"></script>
+<script type="text/babel" src="wf-screens-allocate.jsx"></script>
+<script type="text/babel" src="wf-screens-goals.jsx"></script>
+<script type="text/babel" src="wf-screens-features.jsx"></script>
+<script type="text/babel" src="wf-screens-investment.jsx"></script>
+<script type="text/babel" src="wf-screens-events.jsx"></script>
+
+<script type="text/babel">
+const { useState } = React;
+
+// Phone wrapper — IOSDevice gives us status bar + home indicator + chrome.
+// We hide IOSDevice's status bar via a wrapper because our screens render
+// their own status bar inside (low-fi look).
+function Phone({ children, w = 360, h = 720 }) {
+  return (
+    <div style={{
+      width: w, height: h, borderRadius: 40, overflow: 'hidden',
+      position: 'relative', background: '#fff',
+      boxShadow: '0 30px 60px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.12), inset 0 0 0 6px #1a1a1a',
+      fontFamily: '-apple-system, system-ui, sans-serif',
+    }}>
+      {/* dynamic island */}
+      <div style={{
+        position: 'absolute', top: 9, left: '50%', transform: 'translateX(-50%)',
+        width: 100, height: 28, borderRadius: 18, background: '#000', zIndex: 50,
+      }} />
+      <div style={{ position: 'absolute', inset: 6, borderRadius: 34, overflow: 'hidden', background: '#fff', display: 'flex', flexDirection: 'column' }}>
+        {children}
+      </div>
+      {/* home indicator */}
+      <div style={{
+        position: 'absolute', bottom: 8, left: '50%', transform: 'translateX(-50%)',
+        width: 110, height: 4, borderRadius: 100, background: 'rgba(0,0,0,0.25)', zIndex: 60,
+      }}/>
+    </div>
+  );
+}
+
+// Annotation overlay floats over an artboard. Positions are world-space.
+function AnnotLayer({ children }) {
+  return <div className="annot-layer">{children}</div>;
+}
+
+// Convenience: returns a DCArtboard directly (NOT a wrapper component) so
+// DCSection's direct-child filter sees it.
+function frame({ id, label, children, annotations, w = 360, h = 720, padR = 200 }) {
+  return (
+    <DCArtboard key={id} id={id} label={label} width={w + padR} height={h}>
+      <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+        <Phone w={w} h={h}>{children}</Phone>
+        {annotations && (
+          <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+            {annotations}
+          </div>
+        )}
+      </div>
+    </DCArtboard>
+  );
+}
+
+// ─── Annotations per screen ──────────────────────────────────────
+const A = {
+  splash: (
+    <>
+      <Annot x={380} y={260} text={"app entry —\nshow logo + tagline,\nthen route by auth"} />
+      <svg style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={300} toX={300} toY={340}/>
+      </svg>
+    </>
+  ),
+  login: (
+    <>
+      <Annot x={380} y={300} text={"OAuth providers\nare primary CTAs —\nemail is fallback"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={340} toX={300} toY={400}/>
+      </svg>
+    </>
+  ),
+  signup: (
+    <>
+      <Annot x={380} y={150} text={"first-run gate —\npick demo (devs)\nor real (prod)"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={200} toX={300} toY={260}/>
+      </svg>
+    </>
+  ),
+  signupDemo: (
+    <>
+      <Annot x={380} y={200} text={"dev-only —\nself-hosted backend\nby URL"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={245} toX={300} toY={260}/>
+      </svg>
+    </>
+  ),
+  signupProd: (
+    <>
+      <Annot x={380} y={400} text={"open banking —\nread-only access"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={440} toX={290} toY={500}/>
+      </svg>
+    </>
+  ),
+  homeA: (
+    <>
+      <Annot x={380} y={70} text={"avatar → profile,\nmenu → drawer"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={100} toX={300} toY={110}/>
+      </svg>
+      <Annot x={380} y={210} text={"each tile drills\ninto its overview"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={250} toX={300} toY={290}/>
+      </svg>
+      <Annot x={380} y={380} text={"shown only when\nsync finds new tx"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={415} toX={300} toY={420}/>
+      </svg>
+      <Annot x={380} y={550} text={"goals not yet\ndesigned —\nplaceholder"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={590} toX={300} toY={620}/>
+      </svg>
+    </>
+  ),
+  homeB: (
+    <>
+      <Annot x={380} y={170} text={"review block\nalways visible —\ncount = 0 when none"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={210} toX={300} toY={230}/>
+      </svg>
+      <Annot x={380} y={360} text={"income vs expense\nrhythm — no big\nblue hero"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={400} toX={300} toY={420}/>
+      </svg>
+    </>
+  ),
+  budgets: (
+    <>
+      <Annot x={380} y={250} text={"sorted: over →\nclose → healthy.\nGroceries (close)\nabove Transport"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={310} toX={300} toY={300}/>
+      </svg>
+      <Annot x={380} y={440} text={"each budget has\nits own renewal\ncadence — no\nshared period"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={490} toX={300} toY={420}/>
+      </svg>
+      <Annot x={380} y={620} text={"stack indicator —\nshows carry-over\n€€ + cap"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={655} toX={300} toY={620}/>
+      </svg>
+    </>
+  ),
+  budgetsHomeWidget: (
+    <>
+      <Annot x={380} y={350} text={"compact widget —\ntop 3 attention\nbudgets only"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={400} toX={300} toY={420}/>
+      </svg>
+      <Annot x={380} y={500} text={"'See all' opens\nfull budgets screen"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={540} toX={300} toY={400}/>
+      </svg>
+    </>
+  ),
+  budgetCreate: (
+    <>
+      <Annot x={380} y={140} text={"icon picker —\nbudgets group\nrandom categories"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={180} toX={300} toY={210}/>
+      </svg>
+      <Annot x={380} y={400} text={"sub-cats already\nin another budget\nare disabled w/\n'in X' badge"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={460} toX={300} toY={500}/>
+      </svg>
+      <Annot x={380} y={680} text={"stack carry-over\nwith optional max —\nbars show how it\naccumulates"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={740} toX={300} toY={760}/>
+      </svg>
+    </>
+  ),
+  allocate: (
+    <>
+      <Annot x={380} y={100} text={"period scrubber\nwith arrows —\nbrowse history"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={140} toX={300} toY={140}/>
+      </svg>
+      <Annot x={380} y={230} text={"total / spent /\nleft / unallocated"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={275} toX={300} toY={235}/>
+      </svg>
+      <Annot x={380} y={460} text={"subscriptions FIRST —\nactionable, easy to\ncancel/swap. fixed\ncosts come after"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={520} toX={300} toY={510}/>
+      </svg>
+      <Annot x={380} y={680} text={"edit affordance\non each row"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={715} toX={300} toY={620}/>
+      </svg>
+    </>
+  ),
+  allocateAdd: (
+    <>
+      <Annot x={380} y={170} text={"detected from\nrecent tx — auto-\nsuggest recurring"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={220} toX={300} toY={250}/>
+      </svg>
+      <Annot x={380} y={500} text={"reserves €€ in\nallocate when saved"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={540} toX={300} toY={550}/>
+      </svg>
+    </>
+  ),
+  allocateYear: (
+    <>
+      <Annot x={380} y={260} text={"12-period bar chart —\nactual fills, allocated\nis dashed line"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={320} toX={300} toY={340}/>
+      </svg>
+      <Annot x={380} y={530} text={"yearly totals for\nrecurring costs"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={570} toX={300} toY={580}/>
+      </svg>
+    </>
+  ),
+  allocateTopic: (
+    <>
+      <Annot x={380} y={400} text={"history of facts\n— prev periods\nvs allocated line"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={440} toX={300} toY={460}/>
+      </svg>
+    </>
+  ),
+  allocateMove: (
+    <>
+      <Annot x={380} y={350} text={"shift expected €\nbetween topics —\nbalance the plan"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={390} toX={300} toY={400}/>
+      </svg>
+    </>
+  ),
+  goals: (
+    <>
+      <Annot x={380} y={150} text={"saving balance\nlinked to bank —\nover-allocated warns"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={200} toX={300} toY={210}/>
+      </svg>
+      <Annot x={380} y={310} text={"auto-allocate\nbutton drops\nper-period €€"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={345} toX={300} toY={350}/>
+      </svg>
+      <Annot x={380} y={580} text={"achieved goals —\nsecondary, collapsed"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={620} toX={300} toY={620}/>
+      </svg>
+    </>
+  ),
+  goalCreate: (
+    <>
+      <Annot x={380} y={400} text={"calc: deadline →\nrequired €/period"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={440} toX={300} toY={420}/>
+      </svg>
+    </>
+  ),
+  recurring: (
+    <>
+      <Annot x={380} y={140} text={"toggle period vs\nyear overview"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={170} toX={300} toY={170}/>
+      </svg>
+      <Annot x={380} y={350} text={"hands off to allocate:\nreserve €€ for fixed"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={385} toX={300} toY={380}/>
+      </svg>
+      <Annot x={380} y={500} text={"subs separate\nfrom fixed costs —\nsame screen"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={540} toX={300} toY={530}/>
+      </svg>
+    </>
+  ),
+  accounts: (
+    <>
+      <Annot x={380} y={130} text={"profile switcher —\npersonal / family /\nfreelance"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={170} toX={300} toY={170}/>
+      </svg>
+      <Annot x={380} y={300} text={"group as one\nor per-account\ntoggle"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={335} toX={300} toY={290}/>
+      </svg>
+    </>
+  ),
+  integrations: (
+    <>
+      <Annot x={380} y={250} text={"merchant APIs —\nauto-attach\nreceipts"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={290} toX={300} toY={300}/>
+      </svg>
+    </>
+  ),
+  txReceipt: (
+    <>
+      <Annot x={380} y={400} text={"AH bonuskaart →\nitemised receipt\nattached automatically"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={450} toX={300} toY={470}/>
+      </svg>
+    </>
+  ),
+  tx: (
+    <>
+      <Annot x={380} y={150} text={"chips filter\nthe list"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={180} toX={300} toY={170}/>
+      </svg>
+      <Annot x={380} y={420} text={"green = income /\nreimbursement"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={460} toX={300} toY={490}/>
+      </svg>
+    </>
+  ),
+  expensesA: (
+    <>
+      <Annot x={380} y={130} text={"swipe periods —\nsame block as home"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={170} toX={300} toY={170}/>
+      </svg>
+      <Annot x={380} y={350} text={"main cats with\nsub previews —\ntap to filter list"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={400} toX={300} toY={400}/>
+      </svg>
+    </>
+  ),
+  expensesB: (
+    <>
+      <Annot x={380} y={350} text={"bar variant —\nrelative weight\nat a glance"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={400} toX={300} toY={420}/>
+      </svg>
+    </>
+  ),
+  catTx: (
+    <>
+      <Annot x={380} y={210} text={"now vs prior\nperiods chart"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={250} toX={300} toY={260}/>
+      </svg>
+    </>
+  ),
+  txDetail: (
+    <>
+      <Annot x={380} y={400} text={"reimbursements\nbalance the spend\n(net = €9,20)"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={450} toX={300} toY={490}/>
+      </svg>
+    </>
+  ),
+  reimburse: (
+    <>
+      <Annot x={380} y={260} text={"system suggests\nincoming tx in\nthe same week"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={310} toX={300} toY={340}/>
+      </svg>
+    </>
+  ),
+  catRevSwipe: (
+    <>
+      <Annot x={380} y={260} text={"AI guess shown\nas a chip with\nconfidence"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={300} toX={300} toY={320}/>
+      </svg>
+      <Annot x={380} y={530} text={"big affordances:\n✓ accept   ✗ fix\n(or swipe)"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={580} toX={300} toY={600}/>
+      </svg>
+    </>
+  ),
+  catRevFix: (
+    <>
+      <Annot x={380} y={300} text={"category tree —\nexpand groups,\npick subcategory"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={350} toX={300} toY={350}/>
+      </svg>
+    </>
+  ),
+  catRevList: (
+    <>
+      <Annot x={380} y={170} text={"alt: triage many\nat once, low-conf\nones flagged"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={220} toX={300} toY={230}/>
+      </svg>
+    </>
+  ),
+  profile: (
+    <>
+      <Annot x={380} y={300} text={"data the user\ncan edit"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={335} toX={300} toY={340}/>
+      </svg>
+    </>
+  ),
+  settings: (
+    <>
+      <Annot x={380} y={200} text={"reachable from\nhamburger menu"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={235} toX={300} toY={240}/>
+      </svg>
+    </>
+  ),
+  investment: (
+    <>
+      <Annot x={380} y={130} text={"portfolio value\n(after broker\nconnection)"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={170} toX={300} toY={170}/>
+      </svg>
+      <Annot x={380} y={340} text={"this period:\nset aside vs\ndeployed vs queued"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={385} toX={300} toY={400}/>
+      </svg>
+      <Annot x={380} y={650} text={"holdings synced\nlive from broker"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={690} toX={300} toY={680}/>
+      </svg>
+    </>
+  ),
+  investmentEmpty: (
+    <>
+      <Annot x={380} y={250} text={"before connecting:\njust shows the €\nset aside per period"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={300} toX={300} toY={250}/>
+      </svg>
+      <Annot x={380} y={450} text={"clear single CTA\nto connect a broker"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={490} toX={300} toY={460}/>
+      </svg>
+    </>
+  ),
+  investmentConnect: (
+    <>
+      <Annot x={380} y={170} text={"safety reassurance —\nread-only access"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={210} toX={300} toY={200}/>
+      </svg>
+      <Annot x={380} y={500} text={"manual entry as\nfallback for\nunsupported brokers"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={550} toX={300} toY={620}/>
+      </svg>
+    </>
+  ),
+  investmentAuth: (
+    <>
+      <Annot x={380} y={400} text={"OAuth-style scopes —\ngrey out what we\ndon't get (trading)"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={450} toX={300} toY={490}/>
+      </svg>
+    </>
+  ),
+  events: (
+    <>
+      <Annot x={380} y={120} text={"new bottom-tab —\nassociate tx with\ntrips, parties,\nprojects"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={180} toX={300} toY={120}/>
+      </svg>
+      <Annot x={380} y={250} text={"search + filter\nchips by status"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={290} toX={300} toY={230}/>
+      </svg>
+      <Annot x={380} y={500} text={"image cover, total,\ntx count, status\npill"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={550} toX={300} toY={500}/>
+      </svg>
+    </>
+  ),
+  eventDetail: (
+    <>
+      <Annot x={380} y={130} text={"hero cover with\noverlay back/edit"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={170} toX={300} toY={150}/>
+      </svg>
+      <Annot x={380} y={400} text={"breakdown by\ncategory — total\nstory of the trip"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={450} toX={300} toY={460}/>
+      </svg>
+      <Annot x={380} y={650} text={"tap × to remove\ntx from event"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={690} toX={300} toY={680}/>
+      </svg>
+    </>
+  ),
+  eventCreate: (
+    <>
+      <Annot x={380} y={150} text={"cover image —\nuser uploads or\npicks placeholder"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={200} toX={300} toY={170}/>
+      </svg>
+      <Annot x={380} y={420} text={"auto-link tx\nin date range\nthat match travel"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={470} toX={300} toY={490}/>
+      </svg>
+    </>
+  ),
+  eventAddTx: (
+    <>
+      <Annot x={380} y={300} text={"bulk picker w/\nauto-matched flag —\nuser confirms"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={350} toX={300} toY={420}/>
+      </svg>
+    </>
+  ),
+  sideSheet: (
+    <>
+      <Annot x={380} y={170} text={"drawer from\nhamburger menu"} />
+      <svg style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        <Arrow fromX={380} fromY={210} toX={300} toY={210}/>
+      </svg>
+    </>
+  ),
+};
+
+// ─── App ─────────────────────────────────────────────────────────
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "homeVariant": "A",
+  "expensesVariant": "A",
+  "catReviewVariant": "Swipe",
+  "showFeatureCallouts": true
+}/*EDITMODE-END*/;
+
+function App() {
+  const [tweaks, setTweak] = useTweaks(TWEAK_DEFAULTS);
+
+  return (
+    <>
+      <DesignCanvas title="munni — finance app wireframes">
+
+        <DCSection id="auth" title="Auth & onboarding" subtitle="Splash → Login → Sign-up gate → Demo / Prod variants">
+          {frame({ id: 'splash', label: 'Splash', annotations: A.splash, children: <ScreenSplash/> })}
+          {frame({ id: 'login', label: 'Login', annotations: A.login, children: <ScreenLogin/> })}
+          {frame({ id: 'signup', label: 'Sign-up · pick mode', annotations: A.signup, children: <ScreenSignupGate/> })}
+          {frame({ id: 'signup-demo', label: 'Sign-up · demo (dev)', annotations: A.signupDemo, children: <ScreenSignupDemo/> })}
+          {frame({ id: 'signup-prod', label: 'Sign-up · real (prod)', annotations: A.signupProd, children: <ScreenSignupProd/> })}
+        </DCSection>
+
+        <DCSection id="home" title="Home" subtitle={`5 stats incl. Investment · Budgets is now a compact widget (not a tab). 2 layouts — variant ${tweaks.homeVariant}`}>
+          {frame({ id: 'home-active', label: `Home · variant ${tweaks.homeVariant}`, annotations: tweaks.homeVariant === 'A' ? A.homeA : A.homeB, children: <ScreenHome variant={tweaks.homeVariant}/> })}
+          {frame({ id: 'home-A', label: 'A · grid 2x2 (5 stats)', annotations: A.homeA, children: <ScreenHome variant="A"/> })}
+          {frame({ id: 'home-B', label: 'B · hero + stats', annotations: A.homeB, children: <ScreenHome variant="B"/> })}
+          {frame({ id: 'home-budget-widget', label: 'Budgets widget (in home)', annotations: A.budgetsHomeWidget, children: <ScreenHome variant="A"/> })}
+          {frame({ id: 'side-sheet', label: 'Side sheet (menu)', annotations: A.sideSheet, children: <ScreenSideSheet/> })}
+        </DCSection>
+
+        <DCSection id="tx" title="Transactions" subtitle="List → detail → reimbursement linking">
+          {frame({ id: 'tx-list', label: 'Transactions tab', annotations: A.tx, children: <ScreenTransactions/> })}
+          {frame({ id: 'tx-detail', label: 'Transaction detail', annotations: A.txDetail, children: <ScreenTransactionDetail/> })}
+          {frame({ id: 'tx-reimburse', label: 'Link reimbursement', annotations: A.reimburse, children: <ScreenReimbursementPicker/> })}
+        </DCSection>
+
+        <DCSection id="expenses" title="Expenses" subtitle={`2 layout variations — toggle in Tweaks. Active: variant ${tweaks.expensesVariant}`}>
+          {frame({ id: 'exp-active', label: `Expenses · variant ${tweaks.expensesVariant}`, annotations: tweaks.expensesVariant === 'A' ? A.expensesA : A.expensesB, children: <ScreenExpenses variant={tweaks.expensesVariant}/> })}
+          {frame({ id: 'exp-A', label: 'A · category list', annotations: A.expensesA, children: <ScreenExpenses variant="A"/> })}
+          {frame({ id: 'exp-B', label: 'B · weighted bars', annotations: A.expensesB, children: <ScreenExpenses variant="B"/> })}
+          {frame({ id: 'exp-cat-tx', label: 'Categorized transactions', annotations: A.catTx, children: <ScreenCategorizedTx/> })}
+        </DCSection>
+
+        <DCSection id="catreview" title="Category review (AI)" subtitle={`2 interaction models — toggle in Tweaks. Active: ${tweaks.catReviewVariant}. Skip = review later, no separate "later" button.`}>
+          {frame({ id: 'catrev-active', label: `Active · ${tweaks.catReviewVariant}`, annotations: tweaks.catReviewVariant === 'Swipe' ? A.catRevSwipe : A.catRevList, children: tweaks.catReviewVariant === 'Swipe' ? <ScreenCategoryReviewSwipe/> : <ScreenCategoryReviewList/> })}
+          {frame({ id: 'catrev-swipe', label: 'Swipe · one at a time', annotations: A.catRevSwipe, children: <ScreenCategoryReviewSwipe/> })}
+          {frame({ id: 'catrev-fix', label: 'Fix category', annotations: A.catRevFix, children: <ScreenCategoryReviewFix/> })}
+          {frame({ id: 'catrev-list', label: 'Inline list · triage many', annotations: A.catRevList, children: <ScreenCategoryReviewList/> })}
+        </DCSection>
+
+        <DCSection id="budgets" title="Budgets (drill-in from home)" subtitle="Demoted from a tab to a home widget. Sorted: over → close → healthy. Each budget renews on its own cadence.">
+          {frame({ id: 'budgets-list', label: 'Budgets overview', annotations: A.budgets, children: <ScreenBudgets/> })}
+          {frame({ id: 'budget-create', label: 'Create budget · icon picker, conflict warnings, stack carry-over', annotations: A.budgetCreate, children: <ScreenBudgetCreate/> })}
+        </DCSection>
+
+        <DCSection id="allocate" title="Allocate (replaces Left to Spend)" subtitle="Period scrubber w/ arrows. Subscriptions FIRST (actionable), then fixed costs. Year overview added.">
+          {frame({ id: 'allocate', label: 'Allocate · overview', annotations: A.allocate, children: <ScreenAllocate/> })}
+          {frame({ id: 'allocate-add', label: 'Add recurring cost', annotations: A.allocateAdd, children: <ScreenAllocateAddRecurring/> })}
+          {frame({ id: 'allocate-year', label: 'Year overview', annotations: A.allocateYear, children: <ScreenAllocateYear/> })}
+          {frame({ id: 'allocate-topic', label: 'Topic detail · history', annotations: A.allocateTopic, children: <ScreenAllocateTopic/> })}
+          {frame({ id: 'allocate-move', label: 'Move funds between topics', annotations: A.allocateMove, children: <ScreenAllocateMove/> })}
+        </DCSection>
+
+        <DCSection id="investment" title="Investment (NEW)" subtitle="5th tile on home. Shows €€ set aside per period; connect a broker for live portfolio. Read-only access.">
+          {frame({ id: 'invest-empty', label: 'Before broker · contribution only', annotations: A.investmentEmpty, children: <ScreenInvestmentEmpty/> })}
+          {frame({ id: 'invest-connect', label: 'Connect broker · list', annotations: A.investmentConnect, children: <ScreenInvestmentConnect/> })}
+          {frame({ id: 'invest-auth', label: 'Authorize · OAuth-style', annotations: A.investmentAuth, children: <ScreenInvestmentAuth/> })}
+          {frame({ id: 'invest-portfolio', label: 'After broker · full portfolio', annotations: A.investment, children: <ScreenInvestment/> })}
+        </DCSection>
+
+        <DCSection id="events" title="Events / Activities (NEW · bottom tab)" subtitle="Associate tx with trips, parties, projects. Cover image, dates, total cost, breakdown.">
+          {frame({ id: 'events-list', label: 'Events tab · list + search', annotations: A.events, children: <ScreenEvents/> })}
+          {frame({ id: 'event-detail', label: 'Event detail · breakdown + tx', annotations: A.eventDetail, children: <ScreenEventDetail/> })}
+          {frame({ id: 'event-create', label: 'Create event · cover image', annotations: A.eventCreate, children: <ScreenEventCreate/> })}
+          {frame({ id: 'event-add-tx', label: 'Add transactions to event', annotations: A.eventAddTx, children: <ScreenEventAddTx/> })}
+        </DCSection>
+
+        <DCSection id="goals" title="Goals" subtitle="Long-term savings buckets. Linked to bank saving balance — over-allocation warns user.">
+          {frame({ id: 'goals-list', label: 'Goals overview', annotations: A.goals, children: <ScreenGoals/> })}
+          {frame({ id: 'goal-create', label: 'Create goal', annotations: A.goalCreate, children: <ScreenGoalCreate/> })}
+        </DCSection>
+
+        <DCSection id="recurring" title="Recurring costs" subtitle="Subscriptions + fixed costs together. Toggle period / year overview. Hands off to Allocate.">
+          {frame({ id: 'recurring', label: 'Recurring costs', annotations: A.recurring, children: <ScreenRecurring/> })}
+        </DCSection>
+
+        <DCSection id="accounts" title="Bank accounts & profiles" subtitle="Group multiple accounts as one wallet, or switch between profiles (personal / family).">
+          {frame({ id: 'accounts', label: 'Accounts · profile switch', annotations: A.accounts, children: <ScreenAccounts/> })}
+        </DCSection>
+
+        <DCSection id="integrations" title="Merchant integrations" subtitle="Connect Albert Heijn / Amazon / etc. for auto-attached itemised receipts.">
+          {frame({ id: 'integrations', label: 'Integrations list', annotations: A.integrations, children: <ScreenIntegrations/> })}
+          {frame({ id: 'tx-receipt', label: 'Tx with attached receipt', annotations: A.txReceipt, children: <ScreenTxWithReceipt/> })}
+        </DCSection>
+
+        <DCSection id="profile" title="Profile & Settings" subtitle="Account + drawer entries">
+          {frame({ id: 'profile', label: 'Profile', annotations: A.profile, children: <ScreenProfile/> })}
+          {frame({ id: 'settings', label: 'Settings', annotations: A.settings, children: <ScreenSettings/> })}
+        </DCSection>
+
+      </DesignCanvas>
+
+      <TweaksPanel title="Tweaks">
+        <TweakSection title="Home layout">
+          <TweakRadio label="Home variant" value={tweaks.homeVariant} onChange={v => setTweak('homeVariant', v)} options={['A', 'B']}/>
+          <div style={{ fontSize: 11, color: '#777', lineHeight: 1.4 }}>
+            A = period grid 2×2, then review<br/>B = review first, period as hero
+          </div>
+        </TweakSection>
+        <TweakSection title="Expenses layout">
+          <TweakRadio label="Expenses variant" value={tweaks.expensesVariant} onChange={v => setTweak('expensesVariant', v)} options={['A', 'B']}/>
+          <div style={{ fontSize: 11, color: '#777', lineHeight: 1.4 }}>
+            A = list with sub-cats<br/>B = weighted bar chart
+          </div>
+        </TweakSection>
+        <TweakSection title="Category review">
+          <TweakRadio label="Interaction" value={tweaks.catReviewVariant} onChange={v => setTweak('catReviewVariant', v)} options={['Swipe', 'List']}/>
+          <div style={{ fontSize: 11, color: '#777', lineHeight: 1.4 }}>
+            Swipe = full-screen, one tx<br/>List = stacked, inline ✓ ✗
+          </div>
+        </TweakSection>
+      </TweaksPanel>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
