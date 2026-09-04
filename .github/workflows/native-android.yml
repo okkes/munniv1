@@ -1,0 +1,290 @@
+# Native Android build + publish (native-apps design N6). Runs on
+# merges to master AND on dev pushes — public repos get unlimited free
+# runner minutes, so a fresh build per dev push is affordable.
+#
+# Two store identities (product flavors):
+#   master → prod flavor: app.munni, scheme munni://, Play app "munni"
+#   dev    → dev  flavor: app.munni.dev, scheme munni-dev://, its own
+#            Play app — ONLY once the variable NATIVE_DEV_CHANNEL is
+#            'true' (needs the Firebase + Play setup in
+#            docs/native-setup.md §6); before that dev builds the prod
+#            flavor and publishes nothing.
+#
+# Stack config (NATIVE_API_URL etc.) comes from the job's GitHub
+# Environment (production/staging by branch); repo-level variables of
+# the same name are the shared defaults.
+name: Native Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (empty = by branch; local = the wizard-managed LAN build)'
+        type: choice
+        options: ['', iac-production, iac-staging, local]
+        default: ''
+      localEnv:
+        description: 'Local environment name (with environment=local): prod, dev, …'
+        type: string
+        default: 'prod'
+      publish:
+        description: 'Play upload (auto = when configured; skip = build only, e.g. before the one-time store setup)'
+        type: choice
+        options: [auto, skip]
+        default: auto
+  push:
+    branches: [master, dev]
+
+permissions:
+  contents: read
+
+# one Play publish at a time per branch: two pushes seconds apart raced
+# their Play edit sessions ("This edit has expired", 2026-07-24). The
+# newer run supersedes the queued one — its build contains the older
+# commit anyway.
+concurrency:
+  group: native-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    # first-boot latch: fresh repo copies skip every run until the
+    # wizard marks the repo initialized (variable MUNNI_INITIALIZED)
+    if: ${{ vars.MUNNI_INITIALIZED == 'true' }}
+    runs-on: ubuntu-latest
+    # GitHub Environment resolves NATIVE_* variables per stack (staging
+    # values override repo-level defaults with the SAME name). A dispatch
+    # may target an iac twin explicitly (runbook §5 / the setup wizard).
+    environment: ${{ inputs.environment || (github.ref_name == 'dev' && 'staging' || 'production') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # versionCode = commit count
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Resolve branch and flavor
+        id: env
+        run: |
+          if [ "${{ inputs.environment }}" = "local" ]; then
+            # the wizard-managed LAN channel: ONE store identity PER local
+            # environment, delivered through Play. The package id comes
+            # from the environment variable (it carries the store-package
+            # GENERATION — app.munni.local.prod2 after a burned key); the
+            # name-derived form is only the no-wizard fallback.
+            LOCAL_ENV="${{ inputs.localEnv || 'prod' }}"
+            SCHEME="munni-local"; [ "$LOCAL_ENV" = "prod" ] || SCHEME="munni-local-$LOCAL_ENV"
+            LOCAL_APP_ID="${{ vars.NATIVE_LOCAL_APP_ID }}"
+            [ -n "$LOCAL_APP_ID" ] || LOCAL_APP_ID="app.munni.local.$LOCAL_ENV"
+            echo "master=false" >> "$GITHUB_OUTPUT"
+            echo "flavor=local" >> "$GITHUB_OUTPUT"
+            echo "local_app_id=$LOCAL_APP_ID" >> "$GITHUB_OUTPUT"
+            echo "NATIVE_SCHEME=$SCHEME" >> "$GITHUB_ENV"
+            echo "LOCAL_APP_ID=$LOCAL_APP_ID" >> "$GITHUB_ENV"
+            echo "LOCAL_SCHEME=$SCHEME" >> "$GITHUB_ENV"
+            echo "LOCAL_LABEL=munni $LOCAL_ENV" >> "$GITHUB_ENV"
+          elif [ "${{ github.ref }}" = "refs/heads/master" ]; then
+            echo "master=true" >> "$GITHUB_OUTPUT"
+            echo "flavor=prod" >> "$GITHUB_OUTPUT"
+            echo "NATIVE_SCHEME=munni" >> "$GITHUB_ENV"
+          else
+            echo "master=false" >> "$GITHUB_OUTPUT"
+            if [ "${{ vars.NATIVE_DEV_CHANNEL }}" = "true" ]; then
+              echo "flavor=dev" >> "$GITHUB_OUTPUT"
+              echo "NATIVE_SCHEME=munni-dev" >> "$GITHUB_ENV"
+            else
+              echo "flavor=prod" >> "$GITHUB_OUTPUT"
+              echo "NATIVE_SCHEME=munni" >> "$GITHUB_ENV"
+            fi
+          fi
+
+      - name: Capitalized flavor for gradle task/path names
+        id: flavor
+        run: |
+          F="${{ steps.env.outputs.flavor }}"
+          echo "cap=$(echo "${F:0:1}" | tr a-z A-Z)${F:1}" >> "$GITHUB_OUTPUT"
+
+      - name: Bake catalog baseline (AC3)
+        run: node apps/web/scripts/bake-catalog.mjs
+        env:
+          CATALOG_URL: ${{ vars.NATIVE_API_URL }}/catalog
+
+      - name: Build web bundle and sync the shell
+        run: |
+          npm ci
+          npm run sync -w @munni/native
+        env:
+          VITE_API_URL: ${{ vars.NATIVE_API_URL }}
+          VITE_PUBLIC_ORIGIN: ${{ vars.NATIVE_PUBLIC_ORIGIN }}
+          VITE_LOGTO_ENDPOINT: ${{ vars.NATIVE_LOGTO_ENDPOINT }}
+          # per-platform Logto app; falls back to the shared native app
+          # until NATIVE_LOGTO_APP_ID_ANDROID exists (then delete the old var)
+          VITE_LOGTO_APP_ID: ${{ vars.NATIVE_LOGTO_APP_ID_ANDROID || vars.NATIVE_LOGTO_APP_ID }}
+          VITE_LOGTO_RESOURCE: ${{ vars.NATIVE_LOGTO_RESOURCE }}
+          # per-platform GlitchTip project (android-prod / android-staging)
+          VITE_GLITCHTIP_DSN: ${{ vars.NATIVE_GLITCHTIP_DSN_ANDROID }}
+          VITE_NATIVE_SCHEME: ${{ env.NATIVE_SCHEME }}
+          VITE_CHANNEL: ${{ steps.env.outputs.master == 'true' && 'production' || 'staging' }}
+
+      - name: Compute version (code = commit count; local = seconds since 2026)
+        id: version
+        run: |
+          if [ "${{ steps.env.outputs.flavor }}" = "local" ]; then
+            # dispatched local builds repeat the same commit — a commit
+            # count collides at Play ("Version code 1 has already been
+            # used", found live 2026-08-30 on a fresh copy). Seconds
+            # since 2026-01-01: unique, monotonic, fits Play's
+            # 2100000000 ceiling until 2092.
+            echo "code=$(( $(date +%s) - 1767225600 ))" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+          NAME=$(node -p "require('./package.json').version")
+          if [ "${{ steps.env.outputs.flavor }}" = "local" ]; then NAME="$NAME-local";
+          elif [ "${{ steps.env.outputs.master }}" != "true" ]; then NAME="$NAME-dev"; fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Bake the family CA into the local flavor
+        if: steps.env.outputs.flavor == 'local' && vars.NATIVE_FAMILY_CA_PEM != ''
+        # the app then trusts the machine's https hostnames OUT OF THE BOX
+        # — no manual certificate install on the phone for the app itself
+        run: printf '%s\n' "$CA_PEM" > apps/native/android/app/src/local/res/raw/family_ca.pem
+        env:
+          CA_PEM: ${{ vars.NATIVE_FAMILY_CA_PEM }}
+
+      - name: Rebrand the local flavor for its environment
+        if: steps.env.outputs.flavor == 'local'
+        working-directory: apps/native/android/app/src/local
+        # static per-flavor files carry the identity too: the
+        # google-services stub must match the applicationId or the build
+        # fails, and shortcuts must target the real package/scheme
+        run: |
+          sed -i "s/app\.munni\.local\.prod/${LOCAL_APP_ID}/g" google-services.json
+          sed -i "s/app\.munni\.local\.prod/${LOCAL_APP_ID}/g; s/munni-local:/${LOCAL_SCHEME}:/g" res/xml/shortcuts.xml
+          grep -c "$LOCAL_APP_ID" google-services.json res/xml/shortcuts.xml
+
+      - name: Assemble debug APK
+        working-directory: apps/native/android
+        # chmod: the repo lives on Windows dev machines — never trust the exec bit
+        run: |
+          chmod +x gradlew
+          ./gradlew assemble${{ steps.flavor.outputs.cap }}Debug --no-daemon
+        env:
+          ANDROID_VERSION_CODE: ${{ steps.version.outputs.code }}
+          ANDROID_VERSION_NAME: ${{ steps.version.outputs.name }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: munni-android-debug
+          path: apps/native/android/app/build/outputs/apk/${{ steps.env.outputs.flavor }}/debug/app-${{ steps.env.outputs.flavor }}-debug.apk
+          retention-days: 30
+
+      # ---- signed release ----
+      # Keystore comes from the secrets — or, in a FRESH repo copy with
+      # only IAC_GH_PAT stored, it is MINTED right here and persisted as
+      # environment secrets (production/staging/local): Play registers
+      # whatever key signs the first upload, so a new repo needs zero
+      # manual signing setup. Without either, the debug APK stays the
+      # only artifact.
+      - name: Restore or mint the upload keystore
+        id: keystore
+        run: |
+          set -euo pipefail
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/upload.keystore"
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$IAC_PAT" ]; then
+            PASS=$(openssl rand -hex 24)
+            echo "::add-mask::$PASS"
+            keytool -genkeypair -keystore "$RUNNER_TEMP/upload.keystore" \
+              -alias munni-upload -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$PASS" -keypass "$PASS" -dname "CN=munni upload key"
+            printf %s "$PASS" > "$RUNNER_TEMP/upload.pass"
+            B64=$(base64 -w0 "$RUNNER_TEMP/upload.keystore")
+            for envname in production staging local; do
+              gh api -X PUT "repos/$GH_REPO/environments/$envname" >/dev/null
+              printf %s "$B64"          | gh secret set ANDROID_KEYSTORE_BASE64 --env "$envname" --repo "$GH_REPO"
+              printf %s "$PASS"         | gh secret set ANDROID_KEYSTORE_PASSWORD --env "$envname" --repo "$GH_REPO"
+              printf %s munni-upload    | gh secret set ANDROID_KEY_ALIAS --env "$envname" --repo "$GH_REPO"
+              printf %s "$PASS"         | gh secret set ANDROID_KEY_PASSWORD --env "$envname" --repo "$GH_REPO"
+            done
+            echo "::notice title=Upload keystore minted::Signed this build and stored as environment secrets (production/staging/local) — every future build signs with the same key."
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          IAC_PAT: ${{ secrets.IAC_GH_PAT }}
+          GH_TOKEN: ${{ secrets.IAC_GH_PAT }}
+          GH_REPO: ${{ github.repository }}
+
+      - name: Build signed release bundle
+        if: steps.keystore.outputs.present == 'true'
+        working-directory: apps/native/android
+        # a just-minted keystore hands its password over via the file —
+        # the secrets context was snapshotted before it existed
+        run: |
+          if [ -f "$RUNNER_TEMP/upload.pass" ]; then
+            ANDROID_KEYSTORE_PASSWORD=$(cat "$RUNNER_TEMP/upload.pass")
+            ANDROID_KEY_PASSWORD="$ANDROID_KEYSTORE_PASSWORD"
+            ANDROID_KEY_ALIAS=munni-upload
+            export ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_PASSWORD ANDROID_KEY_ALIAS
+          fi
+          ./gradlew bundle${{ steps.flavor.outputs.cap }}Release --no-daemon
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/upload.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_VERSION_CODE: ${{ steps.version.outputs.code }}
+          ANDROID_VERSION_NAME: ${{ steps.version.outputs.name }}
+
+      - name: Upload release bundle artifact
+        if: steps.keystore.outputs.present == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: munni-android-release
+          path: apps/native/android/app/build/outputs/bundle/${{ steps.env.outputs.flavor }}Release/app-${{ steps.env.outputs.flavor }}-release.aab
+          retention-days: 90
+
+      # ---- Play internal track ----
+      # One-time, manual per app: create it in the Play Console and upload
+      # the FIRST .aab by hand — the API only adds releases to existing apps.
+      # master → app.munni; dev (NATIVE_DEV_CHANNEL) → app.munni.dev;
+      # local → app.munni.local.<env>, PER-environment store channels: the
+      # wizard resolves its per-env NATIVE_LOCAL_CHANNEL_<ENV> flag into
+      # the publish input (auto|skip), so the gate here is input-driven.
+      - name: Publish to Play internal track
+        id: play
+        if: ${{ inputs.publish != 'skip' && steps.keystore.outputs.present == 'true' && env.PLAY_JSON != '' && (steps.env.outputs.master == 'true' || (steps.env.outputs.flavor == 'dev' && vars.NATIVE_DEV_CHANNEL == 'true') || steps.env.outputs.flavor == 'local') }}
+        # local channel: a missing Play app must not paint the run red —
+        # the store mandates a manual FIRST upload, the artifact is the
+        # deliverable until then (master/dev keep failing hard).
+        # Own publisher script (2026-08-30): the third-party action shipped
+        # deprecated inputs + ancient deps and died on concurrent-edit
+        # expiry; ours retries once on a fresh edit.
+        continue-on-error: ${{ steps.env.outputs.flavor == 'local' }}
+        run: node .github/scripts/play-publish.mjs
+        env:
+          PLAY_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          PACKAGE: ${{ steps.env.outputs.flavor == 'local' && steps.env.outputs.local_app_id || (steps.env.outputs.master == 'true' && 'app.munni' || 'app.munni.dev') }}
+          AAB_PATH: apps/native/android/app/build/outputs/bundle/${{ steps.env.outputs.flavor }}Release/app-${{ steps.env.outputs.flavor }}-release.aab
+          MAPPING_PATH: apps/native/android/app/build/outputs/mapping/${{ steps.env.outputs.flavor }}Release/mapping.txt
+          TRACK: internal
+
+      - name: Play upload verdict (local channel)
+        if: ${{ steps.env.outputs.flavor == 'local' && steps.play.outcome == 'failure' }}
+        # the publish step's own log names the exact reason — this warning
+        # must not assert one cause for every failure (an expired edit got
+        # blamed on a missing app, 2026-08-30)
+        run: |
+          echo "::warning title=Play upload did not finish::Read the 'Publish to Play internal track' step above for the exact reason — no app record for ${{ steps.env.outputs.local_app_id }} yet, service account not invited, its Cloud project's Play API disabled, or a concurrent edit. The signed .aab artifact on this run is the manual fallback; once the store accepts, every later build publishes itself."

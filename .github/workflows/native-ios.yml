@@ -1,0 +1,301 @@
+# Native iOS build + TestFlight (native-apps design N6). macOS runners
+# cost 10x minutes, so the job only runs when the repository variable
+# IOS_BUILD_ENABLED is 'true'. Master merges only, like Android.
+#
+# Without ASC_* secrets: unsigned simulator smoke build (artifact).
+# With them: signed archive via App Store Connect API key (automatic
+# signing, -allowProvisioningUpdates registers the bundle id + push
+# capability) and a direct upload to TestFlight.
+#
+# Required secrets for TestFlight: ASC_KEY_ID, ASC_ISSUER_ID,
+# ASC_KEY_P8 (base64 of the .p8), APPLE_TEAM_ID. The app record
+# (bundle app.munni) must exist in App Store Connect first.
+#
+# Two store identities: master → app.munni ("munni", munni://); dev with
+# the repo variable NATIVE_DEV_CHANNEL='true' → app.munni.dev ("munni
+# dev", munni-dev://, its own ASC app record — docs/native-setup.md §6).
+name: Native iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (empty = by branch; local = the wizard-managed LAN build)'
+        type: choice
+        options: ['', iac-production, iac-staging, local]
+        default: ''
+      localEnv:
+        description: 'Local environment name (with environment=local): prod, dev, …'
+        type: string
+        default: 'prod'
+  push:
+    branches: [master, dev] # public repo: standard macOS runners are free
+
+# per-branch: rapid same-branch pushes collapse to the newest build. NOT
+# a global group — GitHub keeps only the newest pending run per group, so
+# a global group let dev-sync pushes silently cancel queued MASTER builds.
+# Cross-branch cert races are handled inside asc-prune.js (age guard).
+concurrency:
+  group: native-ios-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    # first-boot latch (MUNNI_INITIALIZED) + the iOS opt-in flag
+    if: ${{ vars.MUNNI_INITIALIZED == 'true' && vars.IOS_BUILD_ENABLED == 'true' }}
+    runs-on: macos-26
+    # GitHub Environment resolves NATIVE_* variables per stack (staging
+    # values override repo-level defaults with the SAME name). A dispatch
+    # may target an iac twin explicitly (runbook §5 / the setup wizard).
+    environment: ${{ inputs.environment || (github.ref_name == 'dev' && 'staging' || 'production') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # build number = commit count
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Resolve channel (dev branch + NATIVE_DEV_CHANNEL → staging app; environment local → LAN app)
+        id: channel
+        run: |
+          if [ "${{ inputs.environment }}" = "local" ]; then
+            # the wizard-managed LAN channel — ONE ASC app record PER
+            # local environment, delivered through TestFlight. The bundle
+            # id comes from the environment variable (it carries the
+            # store-package GENERATION); name-derived = no-wizard fallback
+            LOCAL_ENV="${{ inputs.localEnv || 'prod' }}"
+            SCHEME="munni-local"; [ "$LOCAL_ENV" = "prod" ] || SCHEME="munni-local-$LOCAL_ENV"
+            BUNDLE_ID="${{ vars.NATIVE_LOCAL_APP_ID }}"
+            [ -n "$BUNDLE_ID" ] || BUNDLE_ID="app.munni.local.$LOCAL_ENV"
+            echo "bundle_id=$BUNDLE_ID" >> "$GITHUB_OUTPUT"
+            echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+            echo "display=munni $LOCAL_ENV" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_name }}" = "dev" ] && [ "${{ vars.NATIVE_DEV_CHANNEL }}" = "true" ]; then
+            echo "bundle_id=app.munni.dev" >> "$GITHUB_OUTPUT"
+            echo "scheme=munni-dev" >> "$GITHUB_OUTPUT"
+            echo "display=munni dev" >> "$GITHUB_OUTPUT"
+          else
+            echo "bundle_id=app.munni" >> "$GITHUB_OUTPUT"
+            echo "scheme=munni" >> "$GITHUB_OUTPUT"
+            echo "display=munni" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bake catalog baseline (AC3)
+        run: node apps/web/scripts/bake-catalog.mjs
+        env:
+          CATALOG_URL: ${{ vars.NATIVE_API_URL }}/catalog
+
+      - name: Build web bundle and sync the shell
+        run: |
+          npm ci
+          npm run sync -w @munni/native
+        env:
+          VITE_API_URL: ${{ vars.NATIVE_API_URL }}
+          VITE_PUBLIC_ORIGIN: ${{ vars.NATIVE_PUBLIC_ORIGIN }}
+          VITE_LOGTO_ENDPOINT: ${{ vars.NATIVE_LOGTO_ENDPOINT }}
+          # per-platform Logto app; falls back to the shared native app
+          # until NATIVE_LOGTO_APP_ID_IOS exists (then delete the old var)
+          VITE_LOGTO_APP_ID: ${{ vars.NATIVE_LOGTO_APP_ID_IOS || vars.NATIVE_LOGTO_APP_ID }}
+          VITE_LOGTO_RESOURCE: ${{ vars.NATIVE_LOGTO_RESOURCE }}
+          # per-platform GlitchTip project (ios-prod / ios-staging)
+          VITE_GLITCHTIP_DSN: ${{ vars.NATIVE_GLITCHTIP_DSN_IOS }}
+          VITE_NATIVE_SCHEME: ${{ steps.channel.outputs.scheme }}
+          VITE_CHANNEL: ${{ github.ref_name == 'dev' && 'staging' || 'production' }}
+
+      # NOTE: the bundle id must be patched in the project file, not passed
+      # as an xcodebuild argument — a command-line PRODUCT_BUNDLE_IDENTIFIER
+      # applies to EVERY target (embedded Capacitor frameworks included) and
+      # the upload dies with "CFBundleIdentifier Collision".
+      - name: Rebrand the shell for the staging / LAN app
+        if: steps.channel.outputs.bundle_id != 'app.munni'
+        working-directory: apps/native/ios/App
+        env:
+          BUNDLE_ID: ${{ steps.channel.outputs.bundle_id }}
+          URL_SCHEME: ${{ steps.channel.outputs.scheme }}
+          DISPLAY_NAME: ${{ steps.channel.outputs.display }}
+        run: |
+          sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = app\.munni;/PRODUCT_BUNDLE_IDENTIFIER = ${BUNDLE_ID};/g" App.xcodeproj/project.pbxproj
+          grep -c "$BUNDLE_ID" App.xcodeproj/project.pbxproj
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $DISPLAY_NAME" App/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleURLTypes:0:CFBundleURLName $BUNDLE_ID" App/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleURLTypes:0:CFBundleURLSchemes:0 $URL_SCHEME" App/Info.plist
+          # non-prod look: white leaf on brand green
+          sed -i '' 's/ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;/ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon-Dev";/g' App.xcodeproj/project.pbxproj
+          if [ "$BUNDLE_ID" = "app.munni.dev" ]; then
+            # the dev Firebase app + ONE associated domain per channel
+            # (universal-links plan §UL3): the dev app claims the test host
+            # only, so the OS never offers the prod app for a munni-dev login
+            cp App/GoogleService-Info-Dev.plist App/GoogleService-Info.plist
+            /usr/libexec/PlistBuddy -c "Set :com.apple.developer.associated-domains:0 applinks:munni-test.okkes.synology.me" App/App.entitlements
+            /usr/libexec/PlistBuddy -c "Print :com.apple.developer.associated-domains" App/App.entitlements
+          else
+            # the LAN app has NO https host: it must claim no universal
+            # links at all (auth returns ride the munni-local:// scheme),
+            # and it keeps the prod Firebase plist (push stays inactive
+            # until app.munni.local is registered in Firebase)
+            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.associated-domains" App/App.entitlements || true
+          fi
+
+      # Apple requires the iOS 26 SDK for App Store Connect uploads; the
+      # runner's default Xcode is older, so pick the newest installed one
+      - name: Select the newest Xcode
+        run: |
+          LATEST="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$LATEST/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install pods
+        working-directory: apps/native/ios/App
+        run: pod install
+
+      - name: Restore the App Store Connect API key
+        id: asc
+        run: |
+          if [ -n "$ASC_KEY_B64" ]; then
+            echo "$ASC_KEY_B64" | base64 -d > "$RUNNER_TEMP/asc.p8"
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          ASC_KEY_B64: ${{ secrets.ASC_KEY_P8 }}
+
+      # ---- no Apple key: unsigned smoke build so CI still guards the shell ----
+      - name: Build (unsigned, simulator) as a smoke test
+        if: steps.asc.outputs.present == 'false'
+        working-directory: apps/native/ios/App
+        run: |
+          xcodebuild -workspace App.xcworkspace -scheme App \
+            -sdk iphonesimulator -configuration Debug \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+
+      - name: Upload simulator artifact
+        if: steps.asc.outputs.present == 'false'
+        uses: actions/upload-artifact@v7
+        with:
+          name: munni-ios-simulator
+          path: apps/native/ios/App/build/Build/Products/Debug-iphonesimulator/App.app
+          retention-days: 14
+
+      # ---- Apple key present: archive, sign automatically, upload to TestFlight ----
+      - name: Compute build number (commit count; dev gets .1 suffix)
+        if: steps.asc.outputs.present == 'true'
+        id: version
+        run: |
+          CODE=$(git rev-list --count HEAD)
+          # same sha on both branches (post-merge sync) would otherwise
+          # upload the same build number twice → "Redundant Binary Upload"
+          [ "${{ github.ref_name }}" = "dev" ] && CODE="$CODE.1"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "name=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # A persistent signing certificate ends the mint-and-revoke churn
+      # (and Apple's "certificate revoked" emails): automatic signing only
+      # mints a NEW Apple Development cert when no usable private key is
+      # in the keychain. Export one once (Xcode → Settings → Accounts →
+      # Manage Certificates → right-click → Export) and store it as
+      # secrets APPLE_DEV_CERT_P12 (base64) + APPLE_DEV_CERT_PASSWORD.
+      - name: Import persistent signing certificate
+        id: signingcert
+        if: steps.asc.outputs.present == 'true'
+        run: |
+          if [ -z "$CERT_B64" ]; then
+            echo "no persistent cert configured — automatic signing will mint one"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p ci "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p ci "$KEYCHAIN"
+          echo "$CERT_B64" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -A -f pkcs12
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          rm "$RUNNER_TEMP/cert.p12"
+          echo "present=true" >> "$GITHUB_OUTPUT"
+        env:
+          CERT_B64: ${{ secrets.APPLE_DEV_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEV_CERT_PASSWORD }}
+
+      # Every ephemeral runner without the persistent cert mints a NEW
+      # Apple Development certificate during archive (its keychain dies
+      # with the run) — left alone they pile up until Apple's cap:
+      # "Choose a certificate to revoke". Pinning CODE_SIGN_IDENTITY does
+      # NOT work (automatic signing rejects a manual identity and the
+      # override drags the Pods targets into signing), so prune the stale
+      # dev certs via the ASC API instead. Skipped once the persistent
+      # cert is in place — each revocation triggers an Apple email.
+      - name: Prune CI-minted development certificates
+        if: steps.asc.outputs.present == 'true' && steps.signingcert.outputs.present != 'true'
+        run: node .github/scripts/asc-prune.js
+        env:
+          ASC_KEY_PATH: ${{ runner.temp }}/asc.p8
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+
+      - name: Archive (automatic signing via ASC key)
+        if: steps.asc.outputs.present == 'true'
+        working-directory: apps/native/ios/App
+        run: |
+          xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" archive \
+            -destination "generic/platform=iOS" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic \
+            CODE_SIGN_ENTITLEMENTS=App/App.entitlements \
+            CURRENT_PROJECT_VERSION="${{ steps.version.outputs.code }}" \
+            MARKETING_VERSION="${{ steps.version.outputs.name }}"
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Export and upload to TestFlight
+        if: steps.asc.outputs.present == 'true'
+        working-directory: apps/native/ios/App
+        run: |
+          cat > "$RUNNER_TEMP/exportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>$APPLE_TEAM_ID</string>
+            <key>uploadSymbols</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          # Apple caps TestFlight uploads per app per day. Hitting the cap
+          # is expected on a busy dev day and must not paint CI red (user
+          # ruling): degrade to a warning; every other failure stays fatal.
+          set +e
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/exportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" 2>&1 | tee "$RUNNER_TEMP/export.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ] && grep -q "Upload limit reached" "$RUNNER_TEMP/export.log"; then
+            echo "::warning title=TestFlight upload skipped::Apple's daily upload limit is reached — the build archived and signed fine; the next quiet day's push uploads again."
+            exit 0
+          fi
+          exit "$status"
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

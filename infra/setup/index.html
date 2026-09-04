@@ -1,0 +1,2628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>munni setup</title>
+<!--
+  munni setup wizard — the guided, mostly-automated path through
+  infra/README.md. Open this file straight from the checkout (no server,
+  no install): the page drives the GitHub REST API from your browser with
+  the one fine-grained PAT you paste below.
+
+  Trust boundary: this page makes network requests ONLY to
+  https://api.github.com. The PAT lives in this tab's memory — never
+  written to localStorage, never sent anywhere else. Non-secret
+  preferences (repo slug, platform, feature choices, your domain) persist
+  in localStorage under munni-setup:*.
+
+  Secret writes use GitHub's sealed-box contract (libsodium
+  crypto_box_seal): vendored tweetnacl + blakejs below, verified by
+  infra/tests/sealedbox.test.mjs against RFC 7748 / RFC 7693 vectors.
+-->
+<style>
+:root{
+  --bg:#f7f4ee; --card:#ffffff; --ink:#1c1a17; --muted:#6b675f;
+  --brand:#08372B; --brand-ink:#08372B; --line:#e5e0d5;
+  --ok:#1a7f4b; --warn:#b25c00; --bad:#b3261e; --chip:#eee9dd; --code:#f0ece2;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#191714; --card:#211f1b; --ink:#ece7dd; --muted:#a29b8e;
+    --brand:#0d5442; --brand-ink:#8fc7b4; --line:#37332c;
+    --ok:#4cc98a; --warn:#e2a34e; --bad:#e57373; --chip:#2b2823; --code:#16140f;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,Segoe UI,Roboto,sans-serif}
+header{background:var(--brand);color:#f2efe7;padding:20px 24px}
+header h1{margin:0;font-size:20px}
+header p{margin:4px 0 0;opacity:.85;font-size:13px}
+main{max-width:980px;margin:0 auto;padding:18px 16px 80px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:16px 0}
+section>h2{margin:0 0 4px;font-size:17px;display:flex;align-items:center;gap:10px}
+section>h2 .n{background:var(--brand);color:#f2efe7;border-radius:8px;font-size:12px;padding:2px 8px}
+.sub{color:var(--muted);font-size:13px;margin:2px 0 12px}
+.card{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:12px 0}
+.card h3{margin:0 0 2px;font-size:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.card .why{color:var(--muted);font-size:13px;margin:4px 0 8px}
+details.how{margin:6px 0 10px;font-size:13px}
+details.how summary{cursor:pointer;color:var(--brand-ink);font-weight:600}
+details.how ol{margin:8px 0 0 4px;padding-left:18px}
+details.how li{margin:3px 0}
+label.f{display:block;margin:8px 0 2px;font-size:12px;color:var(--muted);font-family:ui-monospace,Consolas,monospace}
+input[type=text],input[type=password],textarea,select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:13px ui-monospace,Consolas,monospace}
+textarea{min-height:84px;resize:vertical}
+button{background:var(--brand);color:#f2efe7;border:0;border-radius:9px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;margin:8px 8px 0 0}
+button.ghost{background:transparent;color:var(--brand-ink);border:1px solid var(--brand-ink)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.dot{display:inline-block;min-width:8px;height:8px;border-radius:50%;background:var(--muted);opacity:.5}
+.dot.ok{background:var(--ok);opacity:1}
+.dot.miss{background:var(--bad);opacity:.8}
+.dot.opt{background:var(--muted);opacity:.4}
+.pill{font-size:11px;border-radius:20px;padding:2px 9px;background:var(--chip);color:var(--muted)}
+.pill.ok{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+.pill.warn{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.pill.bad{background:color-mix(in srgb,var(--bad) 15%,transparent);color:var(--bad)}
+.msg{font-size:12px;margin-top:8px;white-space:pre-wrap}
+.msg.ok{color:var(--ok)} .msg.bad{color:var(--bad)}
+code,pre{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:10px 12px;overflow-x:auto;position:relative}
+pre button.copy{position:absolute;top:6px;right:6px;margin:0;padding:3px 9px;font-size:11px}
+a{color:var(--brand-ink)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
+@media(max-width:700px){.grid2{grid-template-columns:1fr}}
+.platforms{display:flex;gap:10px;flex-wrap:wrap}
+.platforms .p{flex:1 1 180px;border:2px solid var(--line);border-radius:12px;padding:12px 14px;cursor:pointer}
+.platforms .p.sel{border-color:var(--brand-ink)}
+.platforms .p.off{opacity:.55;cursor:not-allowed}
+.platforms .p b{display:block}
+.platforms .p span{font-size:12px;color:var(--muted)}
+.feature{display:flex;gap:8px;align-items:baseline;margin:6px 0}
+.feature input{width:auto}
+.runrow{display:flex;align-items:center;gap:10px;font-size:13px;margin:6px 0;flex-wrap:wrap}
+.hide{display:none !important}
+.envtag{font-size:10px;color:var(--muted);font-family:ui-monospace,Consolas,monospace}
+footer{color:var(--muted);font-size:12px;text-align:center;padding:20px}
+/* ── visual pass 2026-08-28: icon circles, softer cards, action pills ── */
+.card{border-radius:14px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.card-head{display:flex;gap:14px;align-items:flex-start}
+.card-head>div{flex:1;min-width:0}
+.ico{flex:0 0 40px;width:40px;height:40px;border-radius:50%;background:color-mix(in srgb,var(--brand-ink) 10%,transparent);display:flex;align-items:center;justify-content:center;margin-top:2px}
+.ico svg{width:20px;height:20px;stroke:var(--brand-ink);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+button{border-radius:20px;padding:8px 16px}
+button.ghost{border-color:var(--line);color:var(--ink)}
+button.ghost:hover{border-color:var(--brand-ink);color:var(--brand-ink)}
+button.danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
+.chiplink{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:16px;padding:3px 10px;font-size:12px;text-decoration:none;margin:2px 6px 2px 0}
+.chiplink b{font-weight:600}
+.statline{display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:13px;margin:6px 0}
+.statline .pill{margin-left:2px}
+</style>
+</head>
+<body>
+<header>
+  <h1>munni setup</h1>
+  <p>From a clean checkout to a running munni ecosystem — accounts, secrets, bootstrap and deploys, guided and automated. This page only ever talks to api.github.com.</p>
+</header>
+<main>
+
+<section id="s-platform">
+  <h2><span class="n">1</span> Where will munni run?</h2>
+  <p class="sub">The choice filters everything below to the steps that platform actually needs.</p>
+  <div class="platforms">
+    <div class="p" data-platform-pick="nas"><b>Synology NAS</b><span>DSM reverse proxy as code, bundle deploys via FileStation, DDNS domain. The proven track.</span></div>
+    <div class="p" data-platform-pick="local"><b>This machine</b><span>The full ecosystem on Docker Desktop — plus the dev stack and tooling like SonarQube.</span></div>
+    <div class="p off" title="Blocked on PI3 (deploy/pi/install.sh) — see docs/raspberry-pi-plan.md"><b>Raspberry Pi</b><span>Planned: flash, install.sh, Caddy HTTPS. Arrives with slice PI3 — this card unlocks then.</span></div>
+  </div>
+</section>
+
+<section id="s-features">
+  <h2><span class="n">2</span> Which features do you want?</h2>
+  <p class="sub">Everything else works out of the box (offline-first app, web push, sync). These need third-party accounts — untick what you don't want and its credentials disappear from step 3.</p>
+  <div id="features"></div>
+</section>
+
+<section id="s-creds">
+  <h2><span class="n">3</span> Accounts &amp; credentials <span class="pill" id="creds-pill"></span></h2>
+  <p class="sub" id="creds-sub"></p>
+
+  <div class="card" id="connect-card">
+    <h3>GitHub — the build &amp; deploy engine <span class="pill" id="connect-pill">not connected</span></h3>
+    <p class="why" id="connect-why-nas">The whole NAS pipeline lives in your repo's Actions: one fine-grained token drives this page live and is stored as <code>IAC_GH_PAT</code> so the bootstrap workflow can manage environments too. Point it at a repo that carries munni — or at a name that doesn't exist yet, and this page forks <code>okkes/munnimok</code> under it. Branches are munni's own (<code>dev</code>/<code>master</code>), picked automatically.</p>
+    <p class="why" id="connect-why-local" hidden>This card only appears because Android/iOS is ticked: the native apps are BUILT by GitHub CI (never on this machine), so those builds need your repo's Actions. Everything else on the local track stays GitHub-free. Same token rules as the NAS track; a nonexistent repo name gets forked from <code>okkes/munnimok</code>.</p>
+    <div id="connect-body">
+    <details class="how"><summary>How to create the token (2 minutes)</summary>
+      <ol>
+        <li>Open <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">github.com/settings/personal-access-tokens/new</a>.</li>
+        <li><b>Repository access</b>: Only select repositories → your munni repo. (If you want this page to CREATE the repo as a fork, pick <b>All repositories</b> instead — a fine-grained token can't pre-select a repo that doesn't exist yet.)</li>
+        <li><b>Repository permissions</b>: Administration <b>Read and write</b> · Secrets <b>Read and write</b> · Variables <b>Read and write</b> · Actions <b>Read and write</b> · Contents <b>Read-only</b>.</li>
+        <li>Generate, copy the <code>github_pat_…</code> value and paste it below. Set a long expiry — rotating it means redoing only this step.</li>
+      </ol>
+    </details>
+    <label class="f" for="in-slug">repository (owner/name)</label>
+    <input type="text" id="in-slug"/>
+    <label class="f" for="in-pat">fine-grained PAT (kept in memory only)</label>
+    <input type="password" id="in-pat" placeholder="github_pat_…" autocomplete="off"/>
+    <button id="btn-connect">Connect</button>
+    <button class="ghost" id="btn-fork" hidden>Create it as a copy of okkes/munnimok</button>
+    <button class="ghost" id="btn-store-pat" disabled>Store as IAC_GH_PAT <span class="dot" data-dot="IAC_GH_PAT"></span></button>
+    <button class="ghost" id="btn-refresh" disabled>Refresh status</button>
+    <div class="msg" id="msg-connect"></div>
+    </div>
+  </div>
+
+  <div id="cred-cards"></div>
+  <div class="msg" id="msg-manifest"></div>
+</section>
+
+<section id="s-bootstrap" data-platform="nas">
+  <h2><span class="n">4</span> First bootstrap <span class="pill" id="bootstrap-pill"></span></h2>
+  <p class="sub">One workflow run per stack: creates the GitHub Environment, mints every generated secret (postgres password, VAPID pair, GlitchTip key…), renders compose + env and uploads a personalized runbook as the run artifact. Re-running is always safe — it only fills gaps.</p>
+  <div class="runrow"><button data-dispatch-iac="munni-iac-prod">Bootstrap munni-iac-prod</button><button data-dispatch-iac="munni-iac-staging">Bootstrap munni-iac-staging</button><button class="ghost" data-dispatch-iac-verify="munni-iac-prod">Verify prod</button><button class="ghost" data-dispatch-iac-verify="munni-iac-staging">Verify staging</button></div>
+  <div id="runs-iac"></div>
+  <div class="msg" id="msg-iac"></div>
+</section>
+
+<section id="s-deploy" data-platform="nas">
+  <h2><span class="n">5</span> Deploy to the NAS</h2>
+  <p class="sub">The deploy workflow renders each twin from its environment, bundles it and uploads via the FileStation API; the NAS poller (runs every ~5 min) unpacks it into <code>/volume1/docker/&lt;stack&gt;/</code> and starts the containers. No SSH at any point.</p>
+  <div class="runrow"><button data-dispatch-nas="iac-both">Deploy both twins</button><button class="ghost" data-dispatch-nas="iac-prod">Only prod</button><button class="ghost" data-dispatch-nas="iac-staging">Only staging</button></div>
+  <div id="runs-nas"></div>
+  <div class="msg" id="msg-nas"></div>
+  <div class="card">
+    <h3>Still manual on the NAS (once) — two DSM clicks</h3>
+    <p class="why">The DSM firewall API is too fragile to automate safely, so bootstrap only PROBES these. Reverse-proxy rules, in contrast, are created by the workflow itself.</p>
+    <ol style="font-size:13px">
+      <li>Control Panel → Security → Firewall: <b>allow 172.16.0.0/12</b> (the docker bridge — Logto self-fetches through the host gateway).</li>
+      <li>Restrict <code class="dom">munni-iac-admin.&lt;domain&gt;</code> and <code class="dom">logto-iac-admin.&lt;domain&gt;</code> to LAN only.</li>
+    </ol>
+    <p class="why">DNS: with Synology DDNS the <code class="dom">*.&lt;domain&gt;</code> wildcard already resolves — nothing to do. External registrars need records for <code class="dom">munni-iac.&lt;domain&gt;</code>, <code class="dom">munni-iac-test.&lt;domain&gt;</code>, <code class="dom">munni-iac-api…</code> etc. (full list in the runbook artifact).</p>
+  </div>
+</section>
+
+<section id="s-local" data-platform="local">
+  <h2><span class="n">4</span> Run munni on this machine <span class="pill" id="local-pill"></span></h2>
+  <p class="sub">Three stacks, one machine: <b>shared services</b> (GlitchTip, the vault, OCR, the munni-control cockpit, pgAdmin) plus TWO complete munni environments — <b>production</b> at localhost:8380 (your real data) and <b>development</b> at localhost:8480 (safe to break). Each environment runs its OWN sign-in service and its OWN database server with its own password — deleting one can never touch the other, and neither holds credentials for the other's data. Nothing is installed on the host beyond Docker Desktop (and node, which this repo already needs).</p>
+
+  <div class="card" id="local-nohelper" hidden>
+    <h3>One double-click and this page does the work itself</h3>
+    <p class="why">You're viewing the file directly, so the page can only guide. Start the <b>local helper</b> and it gains hands: it stores the values you paste, runs bootstrap and docker for you, and streams every step's output right here — no terminal needed.</p>
+    <pre><button class="copy">copy</button><code>infra\setup\start.cmd        (double-click it — or: node infra/setup/serve.mjs)</code></pre>
+    <details class="how"><summary>Manual fallback — the exact commands the helper would run</summary>
+      <ol>
+        <li>Shared services first: <code>$env:NAS_GHCR_PAT='&lt;read:packages PAT&gt;'; node infra/bootstrap.mjs --stack munni-local-shared</code> then <code>cd infra/rendered/munni-local-shared; docker compose --env-file .env.munni-local-shared -f docker-compose.munni-local-shared.yml up -d</code></li>
+        <li>Each environment: <code>node infra/bootstrap.mjs --stack munni-local-prod</code> (same for <code>munni-local-dev</code>) → <code>cd infra/rendered/&lt;stack&gt;</code> → compose up -d. Re-run bootstrap once its Logto answers so the sign-in apps land.</li>
+        <li>GlitchTip token → <code>$env:IAC_GLITCHTIP_API_TOKEN='…'</code> → re-run the env bootstrap → up -d. Verify: <code>node infra/bootstrap.mjs --stack munni-local-prod --verify</code></li>
+        <li>From-source dev loop: <code>docker compose --env-file deploy/env/.env.local -f deploy/docker-compose.local.yml up -d --build</code> + <code>npm run dev</code> (see deploy/README.md).</li>
+        <li>Tooling: <code>deploy/docker-compose.sonar.yml</code> + <code>./deploy/sonar/analyze.ps1</code>; <code>deploy/docker-compose.test.yml</code>; <code>./deploy/webkit-e2e.ps1</code>.</li>
+      </ol>
+    </details>
+  </div>
+
+  <div id="local-helper-ui" hidden>
+    <div class="card">
+      <div class="card-head">
+        <span class="ico" data-ico="pulse"></span>
+        <div>
+          <h3>Status <button class="ghost" id="btn-local-refresh" style="margin:0 0 0 8px;padding:3px 10px;font-size:11px">refresh</button></h3>
+          <div id="local-status" class="why">checking…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="ico" data-ico="wand"></span>
+        <div>
+          <h3>Set up &amp; start everything <span class="pill">one button</span> <span class="pill" id="lan-pill"></span></h3>
+          <p class="why">One button does the whole family: mints the secrets, starts the <b>shared services</b>, creates the <b>production</b> environment when none exists yet, and brings everything up — waiting for each piece and wiring sign-in, crash tracking, the vault and (when a feature needs the network) the https mode with its certificate automatically: when Windows asks to trust a root certificate mid-setup, that is the family's own — approve it. Credentials from step 3 join in whenever you save them; pressing it again is always safe, it only fills gaps.</p>
+          <div class="runrow">
+            <button id="btn-local-setup">▶ Set up &amp; start munni</button>
+            <button class="ghost" id="btn-local-stopall">Stop everything</button>
+            <button class="ghost" id="btn-local-verify">Verify</button>
+            <button class="ghost" id="btn-trust-ca">Trust the certificate again</button>
+            <button class="ghost danger" id="btn-local-nuke-all">Delete everything…</button>
+          </div>
+          <p class="why" id="local-links"></p>
+        </div>
+      </div>
+    </div>
+
+    <div id="env-cards"></div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="ico" data-ico="plus"></span>
+        <div>
+          <h3>Add an environment</h3>
+          <p class="why">Any number, side by side — each with its own sign-in, its own database server, its own ports. Name it and pick which releases it follows; it spins up and wires itself.</p>
+          <div class="runrow">
+            <input type="text" id="env-add-name" maxlength="5" placeholder="test, acc, stg…" style="max-width:170px"/>
+            <select id="env-add-channel" style="max-width:190px"><option value="dev">dev releases</option><option value="latest">main releases</option></select>
+            <button id="btn-env-add">＋ Add &amp; start</button>
+          </div>
+          <div class="msg" id="msg-env-add"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="ico" data-ico="layers"></span>
+        <div>
+          <h3>Shared services <span class="pill" id="local-shared-pill"></span></h3>
+          <p class="why">The family's common ground, always running — Set up starts it, Stop/Delete everything are the only ways it goes down. <a class="chiplink" href="http://localhost:8383" target="_blank" rel="noreferrer"><b>GlitchTip</b> :8383</a> <a class="chiplink" href="https://localhost:8384" target="_blank" rel="noreferrer"><b>Vault</b> :8384</a> <a class="chiplink" href="http://localhost:8385" target="_blank" rel="noreferrer"><b>munni-control</b> :8385</a> <a class="chiplink" href="http://localhost:8386" target="_blank" rel="noreferrer"><b>pgAdmin</b> :8386</a> — control watches the shared GoCardless account across ALL environments (sign in with your production admin); pgAdmin is one console over every database server (logins under Reveal secrets, servers preregistered).</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="ico" data-ico="lock"></span>
+        <div>
+          <h3>Your secrets &amp; the vault <span class="pill">read them back any time</span></h3>
+      <p class="why">Every generated or saved secret lives readable in this machine's gitignored stores (one per stack, shared values kept once) — and a <b>Vaultwarden</b> vault (the self-hosted Bitwarden server) runs in the shared stack at <a href="https://localhost:8384" target="_blank" rel="noreferrer">localhost:8384</a> as the human copy, usable with the real Bitwarden apps/extension. One button does the whole vault: creates the account with a generated master password (kept in the store, shown under Reveal), imports every sign-in and secret as real vault items, and closes signups. Re-press it any time to re-sync the items after setup changes. The vault is served over https with a locally-minted certificate (the Bitwarden client demands https) — your browser warns ONCE about it; choose Advanced → proceed, it is your own machine signing for itself.</p>
+      <div class="runrow">
+        <button id="btn-local-vault-auto">Set up the vault automatically</button>
+        <button class="ghost" id="btn-local-reveal">Reveal secrets here</button>
+        <button class="ghost" id="btn-local-vault-export">Download vault import file</button>
+      </div>
+      <div id="local-secrets" hidden style="margin-top:8px"></div>
+      <details class="how"><summary>Manual fallback — your own account instead</summary>
+        <ol>
+          <li>Open <a href="https://localhost:8384" target="_blank" rel="noreferrer">localhost:8384</a> → <b>Create account</b> with a master password of your own (needs signups open: save <code>VAULT_SIGNUPS_ALLOWED=</code> empty and press Set up).</li>
+          <li>Download the import file (button above) → in the vault: <b>Tools → Import data</b> → format <b>Bitwarden (json)</b> → select the file → Import.</li>
+          <li>Harden: save <code>VAULT_SIGNUPS_ALLOWED=false</code> and press Set up again.</li>
+        </ol>
+      </details>
+        </div>
+      </div>
+    </div>
+
+    <details class="how" style="margin:12px 0">
+      <summary>Developer extras — not needed to run munni</summary>
+      <div class="card" style="margin-top:8px">
+        <h3>The from-source dev loop <span class="pill">develop against it</span></h3>
+        <p class="why">API + Logto + Postgres in docker built from THIS checkout, the app via <code>npm run dev</code> with hot reload (run that in a terminal — hot reload can't live in a container; details in <code>deploy/README.md</code>). This is separate from the registered environments above, which run released images. Verification tooling (SonarQube, e2e, WebKit) stays in the repo's scripts — it belongs to development, not setup.</p>
+        <div class="runrow">
+          <button class="ghost" data-local-tool="devsource:up">Dev loop up</button>
+          <button class="ghost" data-local-tool="devsource:down">Dev loop down</button>
+          <button class="ghost danger" id="btn-dev-nuke">Delete dev loop…</button>
+        </div>
+      </div>
+    </details>
+
+    <div class="card">
+      <h3>Output</h3>
+      <pre id="local-log" style="max-height:340px;overflow:auto;white-space:pre-wrap">idle — every button streams its output here live</pre>
+    </div>
+  </div>
+</section>
+
+<section id="s-logto" data-platform="nas">
+  <h2><span class="n">6</span> Sign-in service (Logto) — the ONE manual auth step <span class="pill" id="logto-pill"></span></h2>
+  <p class="sub">Logto is the self-hosted identity provider the pair owns (accounts, sessions, Google/Apple sign-in). Its very first admin user can't be scripted (no headless OOBE upstream yet) — but it's one visit, and everything after it is code.</p>
+  <ol style="font-size:13px">
+    <li>Open <a href="#" class="dom-link" data-host="logto-iac-admin">logto-iac-admin.&lt;domain&gt;</a> → create the admin user (this is YOUR console login, not an app user).</li>
+    <li>Applications → Create → <b>Machine-to-machine</b> → name it <code>infra</code> → assign the <b>Logto Management API</b> role (all permissions).</li>
+    <li>Paste the app's id + secret here and store — they land in both iac environments:</li>
+  </ol>
+  <div class="grid2">
+    <div><label class="f" for="in-m2m-id">IAC_LOGTO_INFRA_M2M_ID <span class="dot" data-dot="IAC_LOGTO_INFRA_M2M_ID"></span></label><input type="text" id="in-m2m-id" autocomplete="off"/></div>
+    <div><label class="f" for="in-m2m-secret">IAC_LOGTO_INFRA_M2M_SECRET <span class="dot" data-dot="IAC_LOGTO_INFRA_M2M_SECRET"></span></label><input type="password" id="in-m2m-secret" autocomplete="off"/></div>
+  </div>
+  <button id="btn-store-m2m">Store credential</button>
+  <button class="ghost" data-dispatch-iac="munni-iac-prod">Re-run prod bootstrap</button>
+  <button class="ghost" data-dispatch-iac="munni-iac-staging">Re-run staging bootstrap</button>
+  <div class="msg" id="msg-logto"></div>
+  <p class="why">After the re-runs, web/admin/native apps + redirect URIs + API resources exist in Logto and their ids are written back to the environments automatically (<span class="dot" data-dot="var:VITE_LOGTO_APP_ID"></span> <code>VITE_LOGTO_APP_ID</code> appearing = done). Deploy again (step 5) so the frontends pick them up. Google/Apple sign-in from step 3 is wired in the same runs.</p>
+</section>
+
+<section id="s-glitchtip" data-platform="nas">
+  <h2><span class="n">7</span> Crash reports (GlitchTip) <span class="pill" id="gt-pill"></span></h2>
+  <p class="sub">Self-hosted error tracking for app, admin and API. One account + one token — the org, the projects and every DSN are code after that.</p>
+  <ol style="font-size:13px">
+    <li>Open <a href="#" class="dom-link" data-host="glitchtip-iac">glitchtip-iac.&lt;domain&gt;</a> → register the first account.</li>
+    <li>Profile → <b>Auth Tokens</b> → create a token → paste:</li>
+  </ol>
+  <label class="f" for="in-gt-token">IAC_GLITCHTIP_API_TOKEN <span class="dot" data-dot="IAC_GLITCHTIP_API_TOKEN"></span></label>
+  <input type="password" id="in-gt-token" autocomplete="off"/>
+  <button id="btn-store-gt">Store token</button>
+  <button class="ghost" data-dispatch-iac="munni-iac-prod">Re-run prod bootstrap</button>
+  <button class="ghost" data-dispatch-iac="munni-iac-staging">Re-run staging bootstrap</button>
+  <div class="msg" id="msg-gt"></div>
+  <p class="why">The re-run creates org + per-stack projects and writes the DSNs back (<span class="dot" data-dot="var:VITE_GLITCHTIP_DSN"></span> <code>VITE_GLITCHTIP_DSN</code> appearing = done). Deploy again afterwards.</p>
+</section>
+
+<section id="s-admin" data-platform="nas">
+  <h2><span class="n">8</span> Your admin access</h2>
+  <p class="sub">The admin console and diagnosis endpoints only answer to listed OIDC subject ids. Your sub exists once you've signed into the app for the first time.</p>
+  <ol style="font-size:13px">
+    <li>Open <a href="#" class="dom-link" data-host="munni-iac">munni-iac.&lt;domain&gt;</a> and sign up / sign in.</li>
+    <li>Open <a href="#" class="dom-link" data-host="logto-iac-admin">logto-iac-admin.&lt;domain&gt;</a> → User management → your user → copy the <b>User ID</b>.</li>
+  </ol>
+  <label class="f" for="in-admin-subs">NAS_ADMIN_SUBS (comma-separated) <span class="dot" data-dot="NAS_ADMIN_SUBS"></span></label>
+  <input type="text" id="in-admin-subs" placeholder="usr_abc123"/>
+  <button id="btn-store-subs">Store</button>
+  <button class="ghost" data-dispatch-nas="iac-both">Redeploy twins</button>
+  <div class="msg" id="msg-subs"></div>
+</section>
+
+<section id="s-native">
+  <h2><span class="n">9</span> Native apps <span class="pill" id="native-pill"></span></h2>
+  <p class="sub">Builds always run in GitHub CI — nothing compiles on this machine. Only the stores' one rule stays manual: the FIRST binary upload of a new app id.</p>
+
+  <div data-native-track="nas">
+    <div class="runrow"><button data-needs-feature="android" data-dispatch-native="native-android.yml:iac-production">Build Android (iac-prod)</button><button class="ghost" data-needs-feature="android" data-dispatch-native="native-android.yml:iac-staging">Android (iac-staging)</button><button data-needs-feature="ios" data-dispatch-native="native-ios.yml:iac-production">Build iOS (iac-prod)</button><button class="ghost" data-needs-feature="ios" data-dispatch-native="native-ios.yml:iac-staging">iOS (iac-staging)</button></div>
+    <div id="runs-native"></div>
+    <div class="runrow" data-needs-feature="android">
+      <button class="ghost" data-artifact="munni-android-release">Download signed .aab (newest green build)</button>
+      <button class="ghost" data-artifact="munni-android-debug">Download debug .apk</button>
+    </div>
+    <div class="msg" id="msg-native"></div>
+    <ol style="font-size:13px">
+      <li data-needs-feature="android"><b>Android</b>: the download lands as a ZIP — unzip it, then <a href="https://play.google.com/console" target="_blank" rel="noreferrer">Play Console</a> → create the app → Internal testing → upload the <code>.aab</code> → grant the CI service account. Every later upload is CI.</li>
+      <li data-needs-feature="ios"><b>iOS</b>: <a href="https://appstoreconnect.apple.com" target="_blank" rel="noreferrer">App Store Connect</a> → New App — the workflow's TestFlight lane takes over from build 2.</li>
+    </ol>
+  </div>
+
+  <div data-native-track="local">
+    <div class="card" data-needs-feature="android">
+      <h3>Android on your phone (via Play) <span class="pill" id="native-local-pill"></span></h3>
+      <p class="why">Each environment is its own store channel — app id <code data-native-appid>app.munni.local.&lt;env&gt;</code>, delivered through the Play <b>internal testing</b> track, installable side by side. One button: this page writes that environment's LAN config into the GitHub environment <code>local</code> and has CI build + publish it; your phone gets updates from Play like any app. Until the one-time Play setup is done the build SKIPS the upload (no red runs) and hands you the signed bundle instead — and once you finish the upload, this page NOTICES by itself (it polls Play with the service-account credential from step 3) and turns publishing on, nothing to press. The app <b>trusts the family certificate out of the box</b> — CI bakes it into the build, so nothing needs installing on the phone for the app itself. Only for using the phone's BROWSER against the https hostnames: download <a data-ca-url href="#" target="_blank" rel="noreferrer"><code>http://ca.&lt;ip-dashed&gt;.sslip.io</code></a> → <code>root.crt</code> (mind the DASHES in the address, not dots). Needs the GitHub card in step 3.</p>
+      <div class="runrow">
+        <select id="native-env-select" style="max-width:170px"></select>
+        <button id="btn-native-local-android">Build the Android app (CI)</button>
+        <span class="pill" id="play-status-pill"></span>
+      </div>
+      <div class="runrow" style="align-items:center">
+        <label class="f" for="native-suffix" style="margin:0">store package&nbsp;&nbsp;<code>app.munni.local.</code></label>
+        <input id="native-suffix" type="text" maxlength="30" style="max-width:120px" placeholder="prod" autocomplete="off"/>
+        <button class="ghost" id="btn-apply-package" title="a fresh package name — for when Play has pinned a lost upload key, or just to name it yourself">Apply package name</button>
+      </div>
+      <div class="msg" id="msg-native-local"></div>
+      <details class="how"><summary>The one-time Play setup (once per environment)</summary>
+        <ol>
+          <li><a href="https://play.google.com/console" target="_blank" rel="noreferrer">Play Console</a> → Create app → package <code data-native-appid>app.munni.local.&lt;env&gt;</code>. Creating the RECORD is the whole manual part — you can do it before any build exists.</li>
+          <li>This page detects the record within a few minutes (“store app found”) and turns auto-publish on — from then on every build, the FIRST included, uploads itself to Internal testing. Add yourself as a tester there once.</li>
+          <li>No record yet when a build turns green? The signed <code>.aab</code> downloads here as a fallback for a manual first upload.</li>
+        </ol>
+      </details>
+    </div>
+
+    <div class="card" data-needs-feature="ios">
+      <h3>iOS on your phone (via TestFlight)</h3>
+      <p class="why">Same per-environment store channel: bundle <code data-native-appid>app.munni.local.&lt;env&gt;</code> (the selector above picks the environment), built by CI and uploaded straight to TestFlight — install and update it from the TestFlight app. One-time first per environment: create the app record in <a href="https://appstoreconnect.apple.com" target="_blank" rel="noreferrer">App Store Connect</a> with that bundle id — with the ASC key in step 3 this page checks for the record by itself (pill below). First time on an iPhone: install the family certificate once — download <a data-ca-url href="#" target="_blank" rel="noreferrer"><code>http://ca.&lt;ip-dashed&gt;.sslip.io</code></a> → <code>root.crt</code> (DASHES in the address, not dots), then ALSO enable it under Settings → General → About → Certificate Trust Settings (iOS offers no in-app trust bundling — Apple's floor). The build carries the LAN address, so it only works on your wifi.</p>
+      <div class="runrow">
+        <button class="ghost" id="btn-native-local-ios">Build iOS for this machine (CI → TestFlight)</button>
+        <span class="pill" id="asc-status-pill"></span>
+      </div>
+      <div class="msg" id="msg-native-ios"></div>
+      <details class="how"><summary>The one-time App Store Connect setup (once per environment)</summary>
+        <ol>
+          <li>Nothing to click at developer.apple.com: pressing <b>Build</b> registers the App ID (bundle <code data-native-appid>app.munni.local.&lt;env&gt;</code>) through the API with the capabilities munni needs LONG-RUN — <b>Push Notifications</b> (for FCM later; ticking now means never re-provisioning), <b>Sign in with Apple</b> (Apple requires it beside Google login), <b>Associated Domains</b> (universal links on the hosted track). Apple Pay is NOT needed — munni only reads bank data.</li>
+          <li>If you ever open the identifier by hand: the “Push Notifications → Configure” dialog offering <b>APNs SSL certificates</b> is the LEGACY path — create nothing there, just Done. Push will use the team APNs <i>key</i> via Firebase.</li>
+          <li>The one step Apple gives no API for: <a href="https://appstoreconnect.apple.com" target="_blank" rel="noreferrer">App Store Connect</a> → <b>New App</b> → pick the pre-registered bundle id from the dropdown → create. The pill above detects the record and every build then uploads to TestFlight by itself.</li>
+        </ol>
+      </details>
+    </div>
+  </div>
+</section>
+
+<section id="s-day2" data-platform="nas">
+  <h2><span class="n">10</span> Day-2: keeping it healthy</h2>
+  <ul style="font-size:13px">
+    <li>Pushes touching <code>infra/</code> re-VERIFY both stacks automatically (no writes).</li>
+    <li>Re-running any bootstrap is idempotent — it re-applies the stack and re-probes.</li>
+    <li>Generated GitHub secrets are write-only by design; retrieving values: <code>docs/secrets-access-plan.md</code>.</li>
+  </ul>
+  <div class="card">
+    <h3>Rotate a generated secret</h3>
+    <div class="grid2">
+      <div><label class="f" for="in-rotate">secret name(s), comma-separated</label><input type="text" id="in-rotate" placeholder="NAS_GLITCHTIP_SECRET_KEY"/></div>
+      <div><label class="f" for="in-rotate-stack">stack</label><select id="in-rotate-stack"><option>munni-iac-prod</option><option>munni-iac-staging</option></select></div>
+    </div>
+    <button id="btn-rotate">Rotate via workflow</button>
+    <div class="msg" id="msg-rotate"></div>
+  </div>
+</section>
+
+<footer>munni infra setup · this file lives at <code>infra/setup/index.html</code> · text fallback: <code>infra/README.md</code></footer>
+</main>
+
+<script>
+/* ── vendored crypto (unmodified upstream sources) ─────────────────────
+   tweetnacl v1.0.3 (nacl-fast.min.js) — Public domain, by Dmitry Chestnykh
+   and Devi Mandiri, from TweetNaCl by D. J. Bernstein et al.
+   https://github.com/dchest/tweetnacl-js */
+!function(i){"use strict";var v=function(r){var t,n=new Float64Array(16);if(r)for(t=0;t<r.length;t++)n[t]=r[t];return n},h=function(){throw new Error("no PRNG")},o=new Uint8Array(16),n=new Uint8Array(32);n[0]=9;var s=v(),u=v([1]),p=v([56129,1]),c=v([30883,4953,19914,30187,55467,16705,2637,112,59544,30585,16505,36039,65139,11119,27886,20995]),y=v([61785,9906,39828,60374,45398,33411,5274,224,53552,61171,33010,6542,64743,22239,55772,9222]),e=v([54554,36645,11616,51542,42930,38181,51040,26924,56412,64982,57905,49316,21502,52590,14035,8553]),a=v([26200,26214,26214,26214,26214,26214,26214,26214,26214,26214,26214,26214,26214,26214,26214,26214]),l=v([41136,18958,6951,50414,58488,44335,6150,12099,55207,15867,153,11085,57099,20417,9344,11139]);function f(r,t,n,e){r[t]=n>>24&255,r[t+1]=n>>16&255,r[t+2]=n>>8&255,r[t+3]=255&n,r[t+4]=e>>24&255,r[t+5]=e>>16&255,r[t+6]=e>>8&255,r[t+7]=255&e}function w(r,t,n,e,o){var i,h=0;for(i=0;i<o;i++)h|=r[t+i]^n[e+i];return(1&h-1>>>8)-1}function b(r,t,n,e){return w(r,t,n,e,16)}function g(r,t,n,e){return w(r,t,n,e,32)}function A(r,t,n,e){!function(r,t,n,e){for(var o,i=255&e[0]|(255&e[1])<<8|(255&e[2])<<16|(255&e[3])<<24,h=255&n[0]|(255&n[1])<<8|(255&n[2])<<16|(255&n[3])<<24,a=255&n[4]|(255&n[5])<<8|(255&n[6])<<16|(255&n[7])<<24,f=255&n[8]|(255&n[9])<<8|(255&n[10])<<16|(255&n[11])<<24,s=255&n[12]|(255&n[13])<<8|(255&n[14])<<16|(255&n[15])<<24,u=255&e[4]|(255&e[5])<<8|(255&e[6])<<16|(255&e[7])<<24,c=255&t[0]|(255&t[1])<<8|(255&t[2])<<16|(255&t[3])<<24,y=255&t[4]|(255&t[5])<<8|(255&t[6])<<16|(255&t[7])<<24,l=255&t[8]|(255&t[9])<<8|(255&t[10])<<16|(255&t[11])<<24,w=255&t[12]|(255&t[13])<<8|(255&t[14])<<16|(255&t[15])<<24,v=255&e[8]|(255&e[9])<<8|(255&e[10])<<16|(255&e[11])<<24,p=255&n[16]|(255&n[17])<<8|(255&n[18])<<16|(255&n[19])<<24,b=255&n[20]|(255&n[21])<<8|(255&n[22])<<16|(255&n[23])<<24,g=255&n[24]|(255&n[25])<<8|(255&n[26])<<16|(255&n[27])<<24,A=255&n[28]|(255&n[29])<<8|(255&n[30])<<16|(255&n[31])<<24,_=255&e[12]|(255&e[13])<<8|(255&e[14])<<16|(255&e[15])<<24,U=i,d=h,E=a,x=f,M=s,m=u,B=c,S=y,k=l,K=w,Y=v,L=p,T=b,z=g,R=A,P=_,N=0;N<20;N+=2)U^=(o=(T^=(o=(k^=(o=(M^=(o=U+T|0)<<7|o>>>25)+U|0)<<9|o>>>23)+M|0)<<13|o>>>19)+k|0)<<18|o>>>14,m^=(o=(d^=(o=(z^=(o=(K^=(o=m+d|0)<<7|o>>>25)+m|0)<<9|o>>>23)+K|0)<<13|o>>>19)+z|0)<<18|o>>>14,Y^=(o=(B^=(o=(E^=(o=(R^=(o=Y+B|0)<<7|o>>>25)+Y|0)<<9|o>>>23)+R|0)<<13|o>>>19)+E|0)<<18|o>>>14,P^=(o=(L^=(o=(S^=(o=(x^=(o=P+L|0)<<7|o>>>25)+P|0)<<9|o>>>23)+x|0)<<13|o>>>19)+S|0)<<18|o>>>14,U^=(o=(x^=(o=(E^=(o=(d^=(o=U+x|0)<<7|o>>>25)+U|0)<<9|o>>>23)+d|0)<<13|o>>>19)+E|0)<<18|o>>>14,m^=(o=(M^=(o=(S^=(o=(B^=(o=m+M|0)<<7|o>>>25)+m|0)<<9|o>>>23)+B|0)<<13|o>>>19)+S|0)<<18|o>>>14,Y^=(o=(K^=(o=(k^=(o=(L^=(o=Y+K|0)<<7|o>>>25)+Y|0)<<9|o>>>23)+L|0)<<13|o>>>19)+k|0)<<18|o>>>14,P^=(o=(R^=(o=(z^=(o=(T^=(o=P+R|0)<<7|o>>>25)+P|0)<<9|o>>>23)+T|0)<<13|o>>>19)+z|0)<<18|o>>>14;U=U+i|0,d=d+h|0,E=E+a|0,x=x+f|0,M=M+s|0,m=m+u|0,B=B+c|0,S=S+y|0,k=k+l|0,K=K+w|0,Y=Y+v|0,L=L+p|0,T=T+b|0,z=z+g|0,R=R+A|0,P=P+_|0,r[0]=U>>>0&255,r[1]=U>>>8&255,r[2]=U>>>16&255,r[3]=U>>>24&255,r[4]=d>>>0&255,r[5]=d>>>8&255,r[6]=d>>>16&255,r[7]=d>>>24&255,r[8]=E>>>0&255,r[9]=E>>>8&255,r[10]=E>>>16&255,r[11]=E>>>24&255,r[12]=x>>>0&255,r[13]=x>>>8&255,r[14]=x>>>16&255,r[15]=x>>>24&255,r[16]=M>>>0&255,r[17]=M>>>8&255,r[18]=M>>>16&255,r[19]=M>>>24&255,r[20]=m>>>0&255,r[21]=m>>>8&255,r[22]=m>>>16&255,r[23]=m>>>24&255,r[24]=B>>>0&255,r[25]=B>>>8&255,r[26]=B>>>16&255,r[27]=B>>>24&255,r[28]=S>>>0&255,r[29]=S>>>8&255,r[30]=S>>>16&255,r[31]=S>>>24&255,r[32]=k>>>0&255,r[33]=k>>>8&255,r[34]=k>>>16&255,r[35]=k>>>24&255,r[36]=K>>>0&255,r[37]=K>>>8&255,r[38]=K>>>16&255,r[39]=K>>>24&255,r[40]=Y>>>0&255,r[41]=Y>>>8&255,r[42]=Y>>>16&255,r[43]=Y>>>24&255,r[44]=L>>>0&255,r[45]=L>>>8&255,r[46]=L>>>16&255,r[47]=L>>>24&255,r[48]=T>>>0&255,r[49]=T>>>8&255,r[50]=T>>>16&255,r[51]=T>>>24&255,r[52]=z>>>0&255,r[53]=z>>>8&255,r[54]=z>>>16&255,r[55]=z>>>24&255,r[56]=R>>>0&255,r[57]=R>>>8&255,r[58]=R>>>16&255,r[59]=R>>>24&255,r[60]=P>>>0&255,r[61]=P>>>8&255,r[62]=P>>>16&255,r[63]=P>>>24&255}(r,t,n,e)}function _(r,t,n,e){!function(r,t,n,e){for(var o,i=255&e[0]|(255&e[1])<<8|(255&e[2])<<16|(255&e[3])<<24,h=255&n[0]|(255&n[1])<<8|(255&n[2])<<16|(255&n[3])<<24,a=255&n[4]|(255&n[5])<<8|(255&n[6])<<16|(255&n[7])<<24,f=255&n[8]|(255&n[9])<<8|(255&n[10])<<16|(255&n[11])<<24,s=255&n[12]|(255&n[13])<<8|(255&n[14])<<16|(255&n[15])<<24,u=255&e[4]|(255&e[5])<<8|(255&e[6])<<16|(255&e[7])<<24,c=255&t[0]|(255&t[1])<<8|(255&t[2])<<16|(255&t[3])<<24,y=255&t[4]|(255&t[5])<<8|(255&t[6])<<16|(255&t[7])<<24,l=255&t[8]|(255&t[9])<<8|(255&t[10])<<16|(255&t[11])<<24,w=255&t[12]|(255&t[13])<<8|(255&t[14])<<16|(255&t[15])<<24,v=255&e[8]|(255&e[9])<<8|(255&e[10])<<16|(255&e[11])<<24,p=255&n[16]|(255&n[17])<<8|(255&n[18])<<16|(255&n[19])<<24,b=255&n[20]|(255&n[21])<<8|(255&n[22])<<16|(255&n[23])<<24,g=255&n[24]|(255&n[25])<<8|(255&n[26])<<16|(255&n[27])<<24,A=255&n[28]|(255&n[29])<<8|(255&n[30])<<16|(255&n[31])<<24,_=255&e[12]|(255&e[13])<<8|(255&e[14])<<16|(255&e[15])<<24,U=0;U<20;U+=2)i^=(o=(b^=(o=(l^=(o=(s^=(o=i+b|0)<<7|o>>>25)+i|0)<<9|o>>>23)+s|0)<<13|o>>>19)+l|0)<<18|o>>>14,u^=(o=(h^=(o=(g^=(o=(w^=(o=u+h|0)<<7|o>>>25)+u|0)<<9|o>>>23)+w|0)<<13|o>>>19)+g|0)<<18|o>>>14,v^=(o=(c^=(o=(a^=(o=(A^=(o=v+c|0)<<7|o>>>25)+v|0)<<9|o>>>23)+A|0)<<13|o>>>19)+a|0)<<18|o>>>14,_^=(o=(p^=(o=(y^=(o=(f^=(o=_+p|0)<<7|o>>>25)+_|0)<<9|o>>>23)+f|0)<<13|o>>>19)+y|0)<<18|o>>>14,i^=(o=(f^=(o=(a^=(o=(h^=(o=i+f|0)<<7|o>>>25)+i|0)<<9|o>>>23)+h|0)<<13|o>>>19)+a|0)<<18|o>>>14,u^=(o=(s^=(o=(y^=(o=(c^=(o=u+s|0)<<7|o>>>25)+u|0)<<9|o>>>23)+c|0)<<13|o>>>19)+y|0)<<18|o>>>14,v^=(o=(w^=(o=(l^=(o=(p^=(o=v+w|0)<<7|o>>>25)+v|0)<<9|o>>>23)+p|0)<<13|o>>>19)+l|0)<<18|o>>>14,_^=(o=(A^=(o=(g^=(o=(b^=(o=_+A|0)<<7|o>>>25)+_|0)<<9|o>>>23)+b|0)<<13|o>>>19)+g|0)<<18|o>>>14;r[0]=i>>>0&255,r[1]=i>>>8&255,r[2]=i>>>16&255,r[3]=i>>>24&255,r[4]=u>>>0&255,r[5]=u>>>8&255,r[6]=u>>>16&255,r[7]=u>>>24&255,r[8]=v>>>0&255,r[9]=v>>>8&255,r[10]=v>>>16&255,r[11]=v>>>24&255,r[12]=_>>>0&255,r[13]=_>>>8&255,r[14]=_>>>16&255,r[15]=_>>>24&255,r[16]=c>>>0&255,r[17]=c>>>8&255,r[18]=c>>>16&255,r[19]=c>>>24&255,r[20]=y>>>0&255,r[21]=y>>>8&255,r[22]=y>>>16&255,r[23]=y>>>24&255,r[24]=l>>>0&255,r[25]=l>>>8&255,r[26]=l>>>16&255,r[27]=l>>>24&255,r[28]=w>>>0&255,r[29]=w>>>8&255,r[30]=w>>>16&255,r[31]=w>>>24&255}(r,t,n,e)}var U=new Uint8Array([101,120,112,97,110,100,32,51,50,45,98,121,116,101,32,107]);function d(r,t,n,e,o,i,h){var a,f,s=new Uint8Array(16),u=new Uint8Array(64);for(f=0;f<16;f++)s[f]=0;for(f=0;f<8;f++)s[f]=i[f];for(;64<=o;){for(A(u,s,h,U),f=0;f<64;f++)r[t+f]=n[e+f]^u[f];for(a=1,f=8;f<16;f++)a=a+(255&s[f])|0,s[f]=255&a,a>>>=8;o-=64,t+=64,e+=64}if(0<o)for(A(u,s,h,U),f=0;f<o;f++)r[t+f]=n[e+f]^u[f];return 0}function E(r,t,n,e,o){var i,h,a=new Uint8Array(16),f=new Uint8Array(64);for(h=0;h<16;h++)a[h]=0;for(h=0;h<8;h++)a[h]=e[h];for(;64<=n;){for(A(f,a,o,U),h=0;h<64;h++)r[t+h]=f[h];for(i=1,h=8;h<16;h++)i=i+(255&a[h])|0,a[h]=255&i,i>>>=8;n-=64,t+=64}if(0<n)for(A(f,a,o,U),h=0;h<n;h++)r[t+h]=f[h];return 0}function x(r,t,n,e,o){var i=new Uint8Array(32);_(i,e,o,U);for(var h=new Uint8Array(8),a=0;a<8;a++)h[a]=e[a+16];return E(r,t,n,h,i)}function M(r,t,n,e,o,i,h){var a=new Uint8Array(32);_(a,i,h,U);for(var f=new Uint8Array(8),s=0;s<8;s++)f[s]=i[s+16];return d(r,t,n,e,o,f,a)}var m=function(r){var t,n,e,o,i,h,a,f;this.buffer=new Uint8Array(16),this.r=new Uint16Array(10),this.h=new Uint16Array(10),this.pad=new Uint16Array(8),this.leftover=0,t=255&r[this.fin=0]|(255&r[1])<<8,this.r[0]=8191&t,n=255&r[2]|(255&r[3])<<8,this.r[1]=8191&(t>>>13|n<<3),e=255&r[4]|(255&r[5])<<8,this.r[2]=7939&(n>>>10|e<<6),o=255&r[6]|(255&r[7])<<8,this.r[3]=8191&(e>>>7|o<<9),i=255&r[8]|(255&r[9])<<8,this.r[4]=255&(o>>>4|i<<12),this.r[5]=i>>>1&8190,h=255&r[10]|(255&r[11])<<8,this.r[6]=8191&(i>>>14|h<<2),a=255&r[12]|(255&r[13])<<8,this.r[7]=8065&(h>>>11|a<<5),f=255&r[14]|(255&r[15])<<8,this.r[8]=8191&(a>>>8|f<<8),this.r[9]=f>>>5&127,this.pad[0]=255&r[16]|(255&r[17])<<8,this.pad[1]=255&r[18]|(255&r[19])<<8,this.pad[2]=255&r[20]|(255&r[21])<<8,this.pad[3]=255&r[22]|(255&r[23])<<8,this.pad[4]=255&r[24]|(255&r[25])<<8,this.pad[5]=255&r[26]|(255&r[27])<<8,this.pad[6]=255&r[28]|(255&r[29])<<8,this.pad[7]=255&r[30]|(255&r[31])<<8};function B(r,t,n,e,o,i){var h=new m(i);return h.update(n,e,o),h.finish(r,t),0}function S(r,t,n,e,o,i){var h=new Uint8Array(16);return B(h,0,n,e,o,i),b(r,t,h,0)}function k(r,t,n,e,o){var i;if(n<32)return-1;for(M(r,0,t,0,n,e,o),B(r,16,r,32,n-32,r),i=0;i<16;i++)r[i]=0;return 0}function K(r,t,n,e,o){var i,h=new Uint8Array(32);if(n<32)return-1;if(x(h,0,32,e,o),0!==S(t,16,t,32,n-32,h))return-1;for(M(r,0,t,0,n,e,o),i=0;i<32;i++)r[i]=0;return 0}function Y(r,t){var n;for(n=0;n<16;n++)r[n]=0|t[n]}function L(r){var t,n,e=1;for(t=0;t<16;t++)n=r[t]+e+65535,e=Math.floor(n/65536),r[t]=n-65536*e;r[0]+=e-1+37*(e-1)}function T(r,t,n){for(var e,o=~(n-1),i=0;i<16;i++)e=o&(r[i]^t[i]),r[i]^=e,t[i]^=e}function z(r,t){var n,e,o,i=v(),h=v();for(n=0;n<16;n++)h[n]=t[n];for(L(h),L(h),L(h),e=0;e<2;e++){for(i[0]=h[0]-65517,n=1;n<15;n++)i[n]=h[n]-65535-(i[n-1]>>16&1),i[n-1]&=65535;i[15]=h[15]-32767-(i[14]>>16&1),o=i[15]>>16&1,i[14]&=65535,T(h,i,1-o)}for(n=0;n<16;n++)r[2*n]=255&h[n],r[2*n+1]=h[n]>>8}function R(r,t){var n=new Uint8Array(32),e=new Uint8Array(32);return z(n,r),z(e,t),g(n,0,e,0)}function P(r){var t=new Uint8Array(32);return z(t,r),1&t[0]}function N(r,t){var n;for(n=0;n<16;n++)r[n]=t[2*n]+(t[2*n+1]<<8);r[15]&=32767}function O(r,t,n){for(var e=0;e<16;e++)r[e]=t[e]+n[e]}function C(r,t,n){for(var e=0;e<16;e++)r[e]=t[e]-n[e]}function F(r,t,n){var e,o,i=0,h=0,a=0,f=0,s=0,u=0,c=0,y=0,l=0,w=0,v=0,p=0,b=0,g=0,A=0,_=0,U=0,d=0,E=0,x=0,M=0,m=0,B=0,S=0,k=0,K=0,Y=0,L=0,T=0,z=0,R=0,P=n[0],N=n[1],O=n[2],C=n[3],F=n[4],I=n[5],Z=n[6],G=n[7],q=n[8],D=n[9],V=n[10],X=n[11],j=n[12],H=n[13],J=n[14],Q=n[15];i+=(e=t[0])*P,h+=e*N,a+=e*O,f+=e*C,s+=e*F,u+=e*I,c+=e*Z,y+=e*G,l+=e*q,w+=e*D,v+=e*V,p+=e*X,b+=e*j,g+=e*H,A+=e*J,_+=e*Q,h+=(e=t[1])*P,a+=e*N,f+=e*O,s+=e*C,u+=e*F,c+=e*I,y+=e*Z,l+=e*G,w+=e*q,v+=e*D,p+=e*V,b+=e*X,g+=e*j,A+=e*H,_+=e*J,U+=e*Q,a+=(e=t[2])*P,f+=e*N,s+=e*O,u+=e*C,c+=e*F,y+=e*I,l+=e*Z,w+=e*G,v+=e*q,p+=e*D,b+=e*V,g+=e*X,A+=e*j,_+=e*H,U+=e*J,d+=e*Q,f+=(e=t[3])*P,s+=e*N,u+=e*O,c+=e*C,y+=e*F,l+=e*I,w+=e*Z,v+=e*G,p+=e*q,b+=e*D,g+=e*V,A+=e*X,_+=e*j,U+=e*H,d+=e*J,E+=e*Q,s+=(e=t[4])*P,u+=e*N,c+=e*O,y+=e*C,l+=e*F,w+=e*I,v+=e*Z,p+=e*G,b+=e*q,g+=e*D,A+=e*V,_+=e*X,U+=e*j,d+=e*H,E+=e*J,x+=e*Q,u+=(e=t[5])*P,c+=e*N,y+=e*O,l+=e*C,w+=e*F,v+=e*I,p+=e*Z,b+=e*G,g+=e*q,A+=e*D,_+=e*V,U+=e*X,d+=e*j,E+=e*H,x+=e*J,M+=e*Q,c+=(e=t[6])*P,y+=e*N,l+=e*O,w+=e*C,v+=e*F,p+=e*I,b+=e*Z,g+=e*G,A+=e*q,_+=e*D,U+=e*V,d+=e*X,E+=e*j,x+=e*H,M+=e*J,m+=e*Q,y+=(e=t[7])*P,l+=e*N,w+=e*O,v+=e*C,p+=e*F,b+=e*I,g+=e*Z,A+=e*G,_+=e*q,U+=e*D,d+=e*V,E+=e*X,x+=e*j,M+=e*H,m+=e*J,B+=e*Q,l+=(e=t[8])*P,w+=e*N,v+=e*O,p+=e*C,b+=e*F,g+=e*I,A+=e*Z,_+=e*G,U+=e*q,d+=e*D,E+=e*V,x+=e*X,M+=e*j,m+=e*H,B+=e*J,S+=e*Q,w+=(e=t[9])*P,v+=e*N,p+=e*O,b+=e*C,g+=e*F,A+=e*I,_+=e*Z,U+=e*G,d+=e*q,E+=e*D,x+=e*V,M+=e*X,m+=e*j,B+=e*H,S+=e*J,k+=e*Q,v+=(e=t[10])*P,p+=e*N,b+=e*O,g+=e*C,A+=e*F,_+=e*I,U+=e*Z,d+=e*G,E+=e*q,x+=e*D,M+=e*V,m+=e*X,B+=e*j,S+=e*H,k+=e*J,K+=e*Q,p+=(e=t[11])*P,b+=e*N,g+=e*O,A+=e*C,_+=e*F,U+=e*I,d+=e*Z,E+=e*G,x+=e*q,M+=e*D,m+=e*V,B+=e*X,S+=e*j,k+=e*H,K+=e*J,Y+=e*Q,b+=(e=t[12])*P,g+=e*N,A+=e*O,_+=e*C,U+=e*F,d+=e*I,E+=e*Z,x+=e*G,M+=e*q,m+=e*D,B+=e*V,S+=e*X,k+=e*j,K+=e*H,Y+=e*J,L+=e*Q,g+=(e=t[13])*P,A+=e*N,_+=e*O,U+=e*C,d+=e*F,E+=e*I,x+=e*Z,M+=e*G,m+=e*q,B+=e*D,S+=e*V,k+=e*X,K+=e*j,Y+=e*H,L+=e*J,T+=e*Q,A+=(e=t[14])*P,_+=e*N,U+=e*O,d+=e*C,E+=e*F,x+=e*I,M+=e*Z,m+=e*G,B+=e*q,S+=e*D,k+=e*V,K+=e*X,Y+=e*j,L+=e*H,T+=e*J,z+=e*Q,_+=(e=t[15])*P,h+=38*(d+=e*O),a+=38*(E+=e*C),f+=38*(x+=e*F),s+=38*(M+=e*I),u+=38*(m+=e*Z),c+=38*(B+=e*G),y+=38*(S+=e*q),l+=38*(k+=e*D),w+=38*(K+=e*V),v+=38*(Y+=e*X),p+=38*(L+=e*j),b+=38*(T+=e*H),g+=38*(z+=e*J),A+=38*(R+=e*Q),i=(e=(i+=38*(U+=e*N))+(o=1)+65535)-65536*(o=Math.floor(e/65536)),h=(e=h+o+65535)-65536*(o=Math.floor(e/65536)),a=(e=a+o+65535)-65536*(o=Math.floor(e/65536)),f=(e=f+o+65535)-65536*(o=Math.floor(e/65536)),s=(e=s+o+65535)-65536*(o=Math.floor(e/65536)),u=(e=u+o+65535)-65536*(o=Math.floor(e/65536)),c=(e=c+o+65535)-65536*(o=Math.floor(e/65536)),y=(e=y+o+65535)-65536*(o=Math.floor(e/65536)),l=(e=l+o+65535)-65536*(o=Math.floor(e/65536)),w=(e=w+o+65535)-65536*(o=Math.floor(e/65536)),v=(e=v+o+65535)-65536*(o=Math.floor(e/65536)),p=(e=p+o+65535)-65536*(o=Math.floor(e/65536)),b=(e=b+o+65535)-65536*(o=Math.floor(e/65536)),g=(e=g+o+65535)-65536*(o=Math.floor(e/65536)),A=(e=A+o+65535)-65536*(o=Math.floor(e/65536)),_=(e=_+o+65535)-65536*(o=Math.floor(e/65536)),i=(e=(i+=o-1+37*(o-1))+(o=1)+65535)-65536*(o=Math.floor(e/65536)),h=(e=h+o+65535)-65536*(o=Math.floor(e/65536)),a=(e=a+o+65535)-65536*(o=Math.floor(e/65536)),f=(e=f+o+65535)-65536*(o=Math.floor(e/65536)),s=(e=s+o+65535)-65536*(o=Math.floor(e/65536)),u=(e=u+o+65535)-65536*(o=Math.floor(e/65536)),c=(e=c+o+65535)-65536*(o=Math.floor(e/65536)),y=(e=y+o+65535)-65536*(o=Math.floor(e/65536)),l=(e=l+o+65535)-65536*(o=Math.floor(e/65536)),w=(e=w+o+65535)-65536*(o=Math.floor(e/65536)),v=(e=v+o+65535)-65536*(o=Math.floor(e/65536)),p=(e=p+o+65535)-65536*(o=Math.floor(e/65536)),b=(e=b+o+65535)-65536*(o=Math.floor(e/65536)),g=(e=g+o+65535)-65536*(o=Math.floor(e/65536)),A=(e=A+o+65535)-65536*(o=Math.floor(e/65536)),_=(e=_+o+65535)-65536*(o=Math.floor(e/65536)),i+=o-1+37*(o-1),r[0]=i,r[1]=h,r[2]=a,r[3]=f,r[4]=s,r[5]=u,r[6]=c,r[7]=y,r[8]=l,r[9]=w,r[10]=v,r[11]=p,r[12]=b,r[13]=g,r[14]=A,r[15]=_}function I(r,t){F(r,t,t)}function Z(r,t){var n,e=v();for(n=0;n<16;n++)e[n]=t[n];for(n=253;0<=n;n--)I(e,e),2!==n&&4!==n&&F(e,e,t);for(n=0;n<16;n++)r[n]=e[n]}function G(r,t){var n,e=v();for(n=0;n<16;n++)e[n]=t[n];for(n=250;0<=n;n--)I(e,e),1!==n&&F(e,e,t);for(n=0;n<16;n++)r[n]=e[n]}function q(r,t,n){var e,o,i=new Uint8Array(32),h=new Float64Array(80),a=v(),f=v(),s=v(),u=v(),c=v(),y=v();for(o=0;o<31;o++)i[o]=t[o];for(i[31]=127&t[31]|64,i[0]&=248,N(h,n),o=0;o<16;o++)f[o]=h[o],u[o]=a[o]=s[o]=0;for(a[0]=u[0]=1,o=254;0<=o;--o)T(a,f,e=i[o>>>3]>>>(7&o)&1),T(s,u,e),O(c,a,s),C(a,a,s),O(s,f,u),C(f,f,u),I(u,c),I(y,a),F(a,s,a),F(s,f,c),O(c,a,s),C(a,a,s),I(f,a),C(s,u,y),F(a,s,p),O(a,a,u),F(s,s,a),F(a,u,y),F(u,f,h),I(f,c),T(a,f,e),T(s,u,e);for(o=0;o<16;o++)h[o+16]=a[o],h[o+32]=s[o],h[o+48]=f[o],h[o+64]=u[o];var l=h.subarray(32),w=h.subarray(16);return Z(l,l),F(w,w,l),z(r,w),0}function D(r,t){return q(r,t,n)}function V(r,t){return h(t,32),D(r,t)}function X(r,t,n){var e=new Uint8Array(32);return q(e,n,t),_(r,o,e,U)}m.prototype.blocks=function(r,t,n){for(var e,o,i,h,a,f,s,u,c,y,l,w,v,p,b,g,A,_,U,d=this.fin?0:2048,E=this.h[0],x=this.h[1],M=this.h[2],m=this.h[3],B=this.h[4],S=this.h[5],k=this.h[6],K=this.h[7],Y=this.h[8],L=this.h[9],T=this.r[0],z=this.r[1],R=this.r[2],P=this.r[3],N=this.r[4],O=this.r[5],C=this.r[6],F=this.r[7],I=this.r[8],Z=this.r[9];16<=n;)y=c=0,y+=(E+=8191&(e=255&r[t+0]|(255&r[t+1])<<8))*T,y+=(x+=8191&(e>>>13|(o=255&r[t+2]|(255&r[t+3])<<8)<<3))*(5*Z),y+=(M+=8191&(o>>>10|(i=255&r[t+4]|(255&r[t+5])<<8)<<6))*(5*I),y+=(m+=8191&(i>>>7|(h=255&r[t+6]|(255&r[t+7])<<8)<<9))*(5*F),c=(y+=(B+=8191&(h>>>4|(a=255&r[t+8]|(255&r[t+9])<<8)<<12))*(5*C))>>>13,y&=8191,y+=(S+=a>>>1&8191)*(5*O),y+=(k+=8191&(a>>>14|(f=255&r[t+10]|(255&r[t+11])<<8)<<2))*(5*N),y+=(K+=8191&(f>>>11|(s=255&r[t+12]|(255&r[t+13])<<8)<<5))*(5*P),y+=(Y+=8191&(s>>>8|(u=255&r[t+14]|(255&r[t+15])<<8)<<8))*(5*R),l=c+=(y+=(L+=u>>>5|d)*(5*z))>>>13,l+=E*z,l+=x*T,l+=M*(5*Z),l+=m*(5*I),c=(l+=B*(5*F))>>>13,l&=8191,l+=S*(5*C),l+=k*(5*O),l+=K*(5*N),l+=Y*(5*P),c+=(l+=L*(5*R))>>>13,l&=8191,w=c,w+=E*R,w+=x*z,w+=M*T,w+=m*(5*Z),c=(w+=B*(5*I))>>>13,w&=8191,w+=S*(5*F),w+=k*(5*C),w+=K*(5*O),w+=Y*(5*N),v=c+=(w+=L*(5*P))>>>13,v+=E*P,v+=x*R,v+=M*z,v+=m*T,c=(v+=B*(5*Z))>>>13,v&=8191,v+=S*(5*I),v+=k*(5*F),v+=K*(5*C),v+=Y*(5*O),p=c+=(v+=L*(5*N))>>>13,p+=E*N,p+=x*P,p+=M*R,p+=m*z,c=(p+=B*T)>>>13,p&=8191,p+=S*(5*Z),p+=k*(5*I),p+=K*(5*F),p+=Y*(5*C),b=c+=(p+=L*(5*O))>>>13,b+=E*O,b+=x*N,b+=M*P,b+=m*R,c=(b+=B*z)>>>13,b&=8191,b+=S*T,b+=k*(5*Z),b+=K*(5*I),b+=Y*(5*F),g=c+=(b+=L*(5*C))>>>13,g+=E*C,g+=x*O,g+=M*N,g+=m*P,c=(g+=B*R)>>>13,g&=8191,g+=S*z,g+=k*T,g+=K*(5*Z),g+=Y*(5*I),A=c+=(g+=L*(5*F))>>>13,A+=E*F,A+=x*C,A+=M*O,A+=m*N,c=(A+=B*P)>>>13,A&=8191,A+=S*R,A+=k*z,A+=K*T,A+=Y*(5*Z),_=c+=(A+=L*(5*I))>>>13,_+=E*I,_+=x*F,_+=M*C,_+=m*O,c=(_+=B*N)>>>13,_&=8191,_+=S*P,_+=k*R,_+=K*z,_+=Y*T,U=c+=(_+=L*(5*Z))>>>13,U+=E*Z,U+=x*I,U+=M*F,U+=m*C,c=(U+=B*O)>>>13,U&=8191,U+=S*N,U+=k*P,U+=K*R,U+=Y*z,E=y=8191&(c=(c=((c+=(U+=L*T)>>>13)<<2)+c|0)+(y&=8191)|0),x=l+=c>>>=13,M=w&=8191,m=v&=8191,B=p&=8191,S=b&=8191,k=g&=8191,K=A&=8191,Y=_&=8191,L=U&=8191,t+=16,n-=16;this.h[0]=E,this.h[1]=x,this.h[2]=M,this.h[3]=m,this.h[4]=B,this.h[5]=S,this.h[6]=k,this.h[7]=K,this.h[8]=Y,this.h[9]=L},m.prototype.finish=function(r,t){var n,e,o,i,h=new Uint16Array(10);if(this.leftover){for(i=this.leftover,this.buffer[i++]=1;i<16;i++)this.buffer[i]=0;this.fin=1,this.blocks(this.buffer,0,16)}for(n=this.h[1]>>>13,this.h[1]&=8191,i=2;i<10;i++)this.h[i]+=n,n=this.h[i]>>>13,this.h[i]&=8191;for(this.h[0]+=5*n,n=this.h[0]>>>13,this.h[0]&=8191,this.h[1]+=n,n=this.h[1]>>>13,this.h[1]&=8191,this.h[2]+=n,h[0]=this.h[0]+5,n=h[0]>>>13,h[0]&=8191,i=1;i<10;i++)h[i]=this.h[i]+n,n=h[i]>>>13,h[i]&=8191;for(h[9]-=8192,e=(1^n)-1,i=0;i<10;i++)h[i]&=e;for(e=~e,i=0;i<10;i++)this.h[i]=this.h[i]&e|h[i];for(this.h[0]=65535&(this.h[0]|this.h[1]<<13),this.h[1]=65535&(this.h[1]>>>3|this.h[2]<<10),this.h[2]=65535&(this.h[2]>>>6|this.h[3]<<7),this.h[3]=65535&(this.h[3]>>>9|this.h[4]<<4),this.h[4]=65535&(this.h[4]>>>12|this.h[5]<<1|this.h[6]<<14),this.h[5]=65535&(this.h[6]>>>2|this.h[7]<<11),this.h[6]=65535&(this.h[7]>>>5|this.h[8]<<8),this.h[7]=65535&(this.h[8]>>>8|this.h[9]<<5),o=this.h[0]+this.pad[0],this.h[0]=65535&o,i=1;i<8;i++)o=(this.h[i]+this.pad[i]|0)+(o>>>16)|0,this.h[i]=65535&o;r[t+0]=this.h[0]>>>0&255,r[t+1]=this.h[0]>>>8&255,r[t+2]=this.h[1]>>>0&255,r[t+3]=this.h[1]>>>8&255,r[t+4]=this.h[2]>>>0&255,r[t+5]=this.h[2]>>>8&255,r[t+6]=this.h[3]>>>0&255,r[t+7]=this.h[3]>>>8&255,r[t+8]=this.h[4]>>>0&255,r[t+9]=this.h[4]>>>8&255,r[t+10]=this.h[5]>>>0&255,r[t+11]=this.h[5]>>>8&255,r[t+12]=this.h[6]>>>0&255,r[t+13]=this.h[6]>>>8&255,r[t+14]=this.h[7]>>>0&255,r[t+15]=this.h[7]>>>8&255},m.prototype.update=function(r,t,n){var e,o;if(this.leftover){for(n<(o=16-this.leftover)&&(o=n),e=0;e<o;e++)this.buffer[this.leftover+e]=r[t+e];if(n-=o,t+=o,this.leftover+=o,this.leftover<16)return;this.blocks(this.buffer,0,16),this.leftover=0}if(16<=n&&(o=n-n%16,this.blocks(r,t,o),t+=o,n-=o),n){for(e=0;e<n;e++)this.buffer[this.leftover+e]=r[t+e];this.leftover+=n}};var j=k,H=K;var J=[1116352408,3609767458,1899447441,602891725,3049323471,3964484399,3921009573,2173295548,961987163,4081628472,1508970993,3053834265,2453635748,2937671579,2870763221,3664609560,3624381080,2734883394,310598401,1164996542,607225278,1323610764,1426881987,3590304994,1925078388,4068182383,2162078206,991336113,2614888103,633803317,3248222580,3479774868,3835390401,2666613458,4022224774,944711139,264347078,2341262773,604807628,2007800933,770255983,1495990901,1249150122,1856431235,1555081692,3175218132,1996064986,2198950837,2554220882,3999719339,2821834349,766784016,2952996808,2566594879,3210313671,3203337956,3336571891,1034457026,3584528711,2466948901,113926993,3758326383,338241895,168717936,666307205,1188179964,773529912,1546045734,1294757372,1522805485,1396182291,2643833823,1695183700,2343527390,1986661051,1014477480,2177026350,1206759142,2456956037,344077627,2730485921,1290863460,2820302411,3158454273,3259730800,3505952657,3345764771,106217008,3516065817,3606008344,3600352804,1432725776,4094571909,1467031594,275423344,851169720,430227734,3100823752,506948616,1363258195,659060556,3750685593,883997877,3785050280,958139571,3318307427,1322822218,3812723403,1537002063,2003034995,1747873779,3602036899,1955562222,1575990012,2024104815,1125592928,2227730452,2716904306,2361852424,442776044,2428436474,593698344,2756734187,3733110249,3204031479,2999351573,3329325298,3815920427,3391569614,3928383900,3515267271,566280711,3940187606,3454069534,4118630271,4000239992,116418474,1914138554,174292421,2731055270,289380356,3203993006,460393269,320620315,685471733,587496836,852142971,1086792851,1017036298,365543100,1126000580,2618297676,1288033470,3409855158,1501505948,4234509866,1607167915,987167468,1816402316,1246189591];function Q(r,t,n,e){for(var o,i,h,a,f,s,u,c,y,l,w,v,p,b,g,A,_,U,d,E,x,M,m,B,S=new Int32Array(16),k=new Int32Array(16),K=r[0],Y=r[1],L=r[2],T=r[3],z=r[4],R=r[5],P=r[6],N=r[7],O=t[0],C=t[1],F=t[2],I=t[3],Z=t[4],G=t[5],q=t[6],D=t[7],V=0;128<=e;){for(_=0;_<16;_++)U=8*_+V,S[_]=n[U+0]<<24|n[U+1]<<16|n[U+2]<<8|n[U+3],k[_]=n[U+4]<<24|n[U+5]<<16|n[U+6]<<8|n[U+7];for(_=0;_<80;_++)if(o=Y,i=L,h=T,c=C,y=F,l=I,x=65535&(E=D),M=E>>>16,m=65535&(d=N),B=d>>>16,x+=65535&(E=((w=Z)>>>14|(a=z)<<18)^(Z>>>18|z<<14)^(z>>>9|Z<<23)),M+=E>>>16,m+=65535&(d=(z>>>14|Z<<18)^(z>>>18|Z<<14)^(Z>>>9|z<<23)),B+=d>>>16,x+=65535&(E=Z&(v=G)^~Z&(p=q)),M+=E>>>16,m+=65535&(d=z&(f=R)^~z&(s=P)),B+=d>>>16,d=J[2*_],x+=65535&(E=J[2*_+1]),M+=E>>>16,m+=65535&d,B+=d>>>16,d=S[_%16],M+=(E=k[_%16])>>>16,m+=65535&d,B+=d>>>16,m+=(M+=(x+=65535&E)>>>16)>>>16,x=65535&(E=A=65535&x|M<<16),M=E>>>16,m=65535&(d=g=65535&m|(B+=m>>>16)<<16),B=d>>>16,x+=65535&(E=(O>>>28|K<<4)^(K>>>2|O<<30)^(K>>>7|O<<25)),M+=E>>>16,m+=65535&(d=(K>>>28|O<<4)^(O>>>2|K<<30)^(O>>>7|K<<25)),B+=d>>>16,M+=(E=O&C^O&F^C&F)>>>16,m+=65535&(d=K&Y^K&L^Y&L),B+=d>>>16,u=65535&(m+=(M+=(x+=65535&E)>>>16)>>>16)|(B+=m>>>16)<<16,b=65535&x|M<<16,x=65535&(E=l),M=E>>>16,m=65535&(d=h),B=d>>>16,M+=(E=A)>>>16,m+=65535&(d=g),B+=d>>>16,Y=K,L=o,T=i,z=h=65535&(m+=(M+=(x+=65535&E)>>>16)>>>16)|(B+=m>>>16)<<16,R=a,P=f,N=s,K=u,C=O,F=c,I=y,Z=l=65535&x|M<<16,G=w,q=v,D=p,O=b,_%16==15)for(U=0;U<16;U++)d=S[U],x=65535&(E=k[U]),M=E>>>16,m=65535&d,B=d>>>16,d=S[(U+9)%16],x+=65535&(E=k[(U+9)%16]),M+=E>>>16,m+=65535&d,B+=d>>>16,g=S[(U+1)%16],x+=65535&(E=((A=k[(U+1)%16])>>>1|g<<31)^(A>>>8|g<<24)^(A>>>7|g<<25)),M+=E>>>16,m+=65535&(d=(g>>>1|A<<31)^(g>>>8|A<<24)^g>>>7),B+=d>>>16,g=S[(U+14)%16],M+=(E=((A=k[(U+14)%16])>>>19|g<<13)^(g>>>29|A<<3)^(A>>>6|g<<26))>>>16,m+=65535&(d=(g>>>19|A<<13)^(A>>>29|g<<3)^g>>>6),B+=d>>>16,B+=(m+=(M+=(x+=65535&E)>>>16)>>>16)>>>16,S[U]=65535&m|B<<16,k[U]=65535&x|M<<16;x=65535&(E=O),M=E>>>16,m=65535&(d=K),B=d>>>16,d=r[0],M+=(E=t[0])>>>16,m+=65535&d,B+=d>>>16,B+=(m+=(M+=(x+=65535&E)>>>16)>>>16)>>>16,r[0]=K=65535&m|B<<16,t[0]=O=65535&x|M<<16,x=65535&(E=C),M=E>>>16,m=65535&(d=Y),B=d>>>16,d=r[1],M+=(E=t[1])>>>16,m+=65535&d,B+=d>>>16,B+=(m+=(M+=(x+=65535&E)>>>16)>>>16)>>>16,r[1]=Y=65535&m|B<<16,t[1]=C=65535&x|M<<16,x=65535&(E=F),M=E>>>16,m=65535&(d=L),B=d>>>16,d=r[2],M+=(E=t[2])>>>16,m+=65535&d,B+=d>>>16,B+=(m+=(M+=(x+=65535&E)>>>16)>>>16)>>>16,r[2]=L=65535&m|B<<16,t[2]=F=65535&x|M<<16,x=65535&(E=I),M=E>>>16,m=65535&(d=T),B=d>>>16,d=r[3],M+=(E=t[3])>>>16,m+=65535&d,B+=d>>>16,B+=(m+=(M+=(x+=65535&E)>>>16)>>>16)>>>16,r[3]=T=65535&m|B<<16,t[3]=I=65535&x|M<<16,x=65535&(E=Z),M=E>>>16,m=65535&(d=z),B=d>>>16,d=r[4],M+=(E=t[4])>>>16,m+=65535&d,B+=d>>>16,B+=(m+=(M+=(x+=65535&E)>>>16)>>>16)>>>16,r[4]=z=65535&m|B<<16,t[4]=Z=65535&x|M<<16,x=65535&(E=G),M=E>>>16,m=65535&(d=R),B=d>>>16,d=r[5],M+=(E=t[5])>>>16,m+=65535&d,B+=d>>>16,B+=(m+=(M+=(x+=65535&E)>>>16)>>>16)>>>16,r[5]=R=65535&m|B<<16,t[5]=G=65535&x|M<<16,x=65535&(E=q),M=E>>>16,m=65535&(d=P),B=d>>>16,d=r[6],M+=(E=t[6])>>>16,m+=65535&d,B+=d>>>16,B+=(m+=(M+=(x+=65535&E)>>>16)>>>16)>>>16,r[6]=P=65535&m|B<<16,t[6]=q=65535&x|M<<16,x=65535&(E=D),M=E>>>16,m=65535&(d=N),B=d>>>16,d=r[7],M+=(E=t[7])>>>16,m+=65535&d,B+=d>>>16,B+=(m+=(M+=(x+=65535&E)>>>16)>>>16)>>>16,r[7]=N=65535&m|B<<16,t[7]=D=65535&x|M<<16,V+=128,e-=128}return e}function W(r,t,n){var e,o=new Int32Array(8),i=new Int32Array(8),h=new Uint8Array(256),a=n;for(o[0]=1779033703,o[1]=3144134277,o[2]=1013904242,o[3]=2773480762,o[4]=1359893119,o[5]=2600822924,o[6]=528734635,o[7]=1541459225,i[0]=4089235720,i[1]=2227873595,i[2]=4271175723,i[3]=1595750129,i[4]=2917565137,i[5]=725511199,i[6]=4215389547,i[7]=327033209,Q(o,i,t,n),n%=128,e=0;e<n;e++)h[e]=t[a-n+e];for(h[n]=128,h[(n=256-128*(n<112?1:0))-9]=0,f(h,n-8,a/536870912|0,a<<3),Q(o,i,h,n),e=0;e<8;e++)f(r,8*e,o[e],i[e]);return 0}function $(r,t){var n=v(),e=v(),o=v(),i=v(),h=v(),a=v(),f=v(),s=v(),u=v();C(n,r[1],r[0]),C(u,t[1],t[0]),F(n,n,u),O(e,r[0],r[1]),O(u,t[0],t[1]),F(e,e,u),F(o,r[3],t[3]),F(o,o,y),F(i,r[2],t[2]),O(i,i,i),C(h,e,n),C(a,i,o),O(f,i,o),O(s,e,n),F(r[0],h,a),F(r[1],s,f),F(r[2],f,a),F(r[3],h,s)}function rr(r,t,n){var e;for(e=0;e<4;e++)T(r[e],t[e],n)}function tr(r,t){var n=v(),e=v(),o=v();Z(o,t[2]),F(n,t[0],o),F(e,t[1],o),z(r,e),r[31]^=P(n)<<7}function nr(r,t,n){var e,o;for(Y(r[0],s),Y(r[1],u),Y(r[2],u),Y(r[3],s),o=255;0<=o;--o)rr(r,t,e=n[o/8|0]>>(7&o)&1),$(t,r),$(r,r),rr(r,t,e)}function er(r,t){var n=[v(),v(),v(),v()];Y(n[0],e),Y(n[1],a),Y(n[2],u),F(n[3],e,a),nr(r,n,t)}function or(r,t,n){var e,o=new Uint8Array(64),i=[v(),v(),v(),v()];for(n||h(t,32),W(o,t,32),o[0]&=248,o[31]&=127,o[31]|=64,er(i,o),tr(r,i),e=0;e<32;e++)t[e+32]=r[e];return 0}var ir=new Float64Array([237,211,245,92,26,99,18,88,214,156,247,162,222,249,222,20,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,16]);function hr(r,t){var n,e,o,i;for(e=63;32<=e;--e){for(n=0,o=e-32,i=e-12;o<i;++o)t[o]+=n-16*t[e]*ir[o-(e-32)],n=Math.floor((t[o]+128)/256),t[o]-=256*n;t[o]+=n,t[e]=0}for(o=n=0;o<32;o++)t[o]+=n-(t[31]>>4)*ir[o],n=t[o]>>8,t[o]&=255;for(o=0;o<32;o++)t[o]-=n*ir[o];for(e=0;e<32;e++)t[e+1]+=t[e]>>8,r[e]=255&t[e]}function ar(r){var t,n=new Float64Array(64);for(t=0;t<64;t++)n[t]=r[t];for(t=0;t<64;t++)r[t]=0;hr(r,n)}function fr(r,t,n,e){var o,i,h=new Uint8Array(64),a=new Uint8Array(64),f=new Uint8Array(64),s=new Float64Array(64),u=[v(),v(),v(),v()];W(h,e,32),h[0]&=248,h[31]&=127,h[31]|=64;var c=n+64;for(o=0;o<n;o++)r[64+o]=t[o];for(o=0;o<32;o++)r[32+o]=h[32+o];for(W(f,r.subarray(32),n+32),ar(f),er(u,f),tr(r,u),o=32;o<64;o++)r[o]=e[o];for(W(a,r,n+64),ar(a),o=0;o<64;o++)s[o]=0;for(o=0;o<32;o++)s[o]=f[o];for(o=0;o<32;o++)for(i=0;i<32;i++)s[o+i]+=a[o]*h[i];return hr(r.subarray(32),s),c}function sr(r,t,n,e){var o,i=new Uint8Array(32),h=new Uint8Array(64),a=[v(),v(),v(),v()],f=[v(),v(),v(),v()];if(n<64)return-1;if(function(r,t){var n=v(),e=v(),o=v(),i=v(),h=v(),a=v(),f=v();if(Y(r[2],u),N(r[1],t),I(o,r[1]),F(i,o,c),C(o,o,r[2]),O(i,r[2],i),I(h,i),I(a,h),F(f,a,h),F(n,f,o),F(n,n,i),G(n,n),F(n,n,o),F(n,n,i),F(n,n,i),F(r[0],n,i),I(e,r[0]),F(e,e,i),R(e,o)&&F(r[0],r[0],l),I(e,r[0]),F(e,e,i),R(e,o))return 1;P(r[0])===t[31]>>7&&C(r[0],s,r[0]),F(r[3],r[0],r[1])}(f,e))return-1;for(o=0;o<n;o++)r[o]=t[o];for(o=0;o<32;o++)r[o+32]=e[o];if(W(h,r,n),ar(h),nr(a,f,h),er(f,t.subarray(32)),$(a,f),tr(i,a),n-=64,g(t,0,i,0)){for(o=0;o<n;o++)r[o]=0;return-1}for(o=0;o<n;o++)r[o]=t[o+64];return n}function ur(r,t){if(32!==r.length)throw new Error("bad key size");if(24!==t.length)throw new Error("bad nonce size")}function cr(){for(var r=0;r<arguments.length;r++)if(!(arguments[r]instanceof Uint8Array))throw new TypeError("unexpected type, use Uint8Array")}function yr(r){for(var t=0;t<r.length;t++)r[t]=0}i.lowlevel={crypto_core_hsalsa20:_,crypto_stream_xor:M,crypto_stream:x,crypto_stream_salsa20_xor:d,crypto_stream_salsa20:E,crypto_onetimeauth:B,crypto_onetimeauth_verify:S,crypto_verify_16:b,crypto_verify_32:g,crypto_secretbox:k,crypto_secretbox_open:K,crypto_scalarmult:q,crypto_scalarmult_base:D,crypto_box_beforenm:X,crypto_box_afternm:j,crypto_box:function(r,t,n,e,o,i){var h=new Uint8Array(32);return X(h,o,i),j(r,t,n,e,h)},crypto_box_open:function(r,t,n,e,o,i){var h=new Uint8Array(32);return X(h,o,i),H(r,t,n,e,h)},crypto_box_keypair:V,crypto_hash:W,crypto_sign:fr,crypto_sign_keypair:or,crypto_sign_open:sr,crypto_secretbox_KEYBYTES:32,crypto_secretbox_NONCEBYTES:24,crypto_secretbox_ZEROBYTES:32,crypto_secretbox_BOXZEROBYTES:16,crypto_scalarmult_BYTES:32,crypto_scalarmult_SCALARBYTES:32,crypto_box_PUBLICKEYBYTES:32,crypto_box_SECRETKEYBYTES:32,crypto_box_BEFORENMBYTES:32,crypto_box_NONCEBYTES:24,crypto_box_ZEROBYTES:32,crypto_box_BOXZEROBYTES:16,crypto_sign_BYTES:64,crypto_sign_PUBLICKEYBYTES:32,crypto_sign_SECRETKEYBYTES:64,crypto_sign_SEEDBYTES:32,crypto_hash_BYTES:64,gf:v,D:c,L:ir,pack25519:z,unpack25519:N,M:F,A:O,S:I,Z:C,pow2523:G,add:$,set25519:Y,modL:hr,scalarmult:nr,scalarbase:er},i.randomBytes=function(r){var t=new Uint8Array(r);return h(t,r),t},i.secretbox=function(r,t,n){cr(r,t,n),ur(n,t);for(var e=new Uint8Array(32+r.length),o=new Uint8Array(e.length),i=0;i<r.length;i++)e[i+32]=r[i];return k(o,e,e.length,t,n),o.subarray(16)},i.secretbox.open=function(r,t,n){cr(r,t,n),ur(n,t);for(var e=new Uint8Array(16+r.length),o=new Uint8Array(e.length),i=0;i<r.length;i++)e[i+16]=r[i];return e.length<32||0!==K(o,e,e.length,t,n)?null:o.subarray(32)},i.secretbox.keyLength=32,i.secretbox.nonceLength=24,i.secretbox.overheadLength=16,i.scalarMult=function(r,t){if(cr(r,t),32!==r.length)throw new Error("bad n size");if(32!==t.length)throw new Error("bad p size");var n=new Uint8Array(32);return q(n,r,t),n},i.scalarMult.base=function(r){if(cr(r),32!==r.length)throw new Error("bad n size");var t=new Uint8Array(32);return D(t,r),t},i.scalarMult.scalarLength=32,i.scalarMult.groupElementLength=32,i.box=function(r,t,n,e){var o=i.box.before(n,e);return i.secretbox(r,t,o)},i.box.before=function(r,t){cr(r,t),function(r,t){if(32!==r.length)throw new Error("bad public key size");if(32!==t.length)throw new Error("bad secret key size")}(r,t);var n=new Uint8Array(32);return X(n,r,t),n},i.box.after=i.secretbox,i.box.open=function(r,t,n,e){var o=i.box.before(n,e);return i.secretbox.open(r,t,o)},i.box.open.after=i.secretbox.open,i.box.keyPair=function(){var r=new Uint8Array(32),t=new Uint8Array(32);return V(r,t),{publicKey:r,secretKey:t}},i.box.keyPair.fromSecretKey=function(r){if(cr(r),32!==r.length)throw new Error("bad secret key size");var t=new Uint8Array(32);return D(t,r),{publicKey:t,secretKey:new Uint8Array(r)}},i.box.publicKeyLength=32,i.box.secretKeyLength=32,i.box.sharedKeyLength=32,i.box.nonceLength=24,i.box.overheadLength=i.secretbox.overheadLength,i.sign=function(r,t){if(cr(r,t),64!==t.length)throw new Error("bad secret key size");var n=new Uint8Array(64+r.length);return fr(n,r,r.length,t),n},i.sign.open=function(r,t){if(cr(r,t),32!==t.length)throw new Error("bad public key size");var n=new Uint8Array(r.length),e=sr(n,r,r.length,t);if(e<0)return null;for(var o=new Uint8Array(e),i=0;i<o.length;i++)o[i]=n[i];return o},i.sign.detached=function(r,t){for(var n=i.sign(r,t),e=new Uint8Array(64),o=0;o<e.length;o++)e[o]=n[o];return e},i.sign.detached.verify=function(r,t,n){if(cr(r,t,n),64!==t.length)throw new Error("bad signature size");if(32!==n.length)throw new Error("bad public key size");var e,o=new Uint8Array(64+r.length),i=new Uint8Array(64+r.length);for(e=0;e<64;e++)o[e]=t[e];for(e=0;e<r.length;e++)o[e+64]=r[e];return 0<=sr(i,o,o.length,n)},i.sign.keyPair=function(){var r=new Uint8Array(32),t=new Uint8Array(64);return or(r,t),{publicKey:r,secretKey:t}},i.sign.keyPair.fromSecretKey=function(r){if(cr(r),64!==r.length)throw new Error("bad secret key size");for(var t=new Uint8Array(32),n=0;n<t.length;n++)t[n]=r[32+n];return{publicKey:t,secretKey:new Uint8Array(r)}},i.sign.keyPair.fromSeed=function(r){if(cr(r),32!==r.length)throw new Error("bad seed size");for(var t=new Uint8Array(32),n=new Uint8Array(64),e=0;e<32;e++)n[e]=r[e];return or(t,n,!0),{publicKey:t,secretKey:n}},i.sign.publicKeyLength=32,i.sign.secretKeyLength=64,i.sign.seedLength=32,i.sign.signatureLength=64,i.hash=function(r){cr(r);var t=new Uint8Array(64);return W(t,r,r.length),t},i.hash.hashLength=64,i.verify=function(r,t){return cr(r,t),0!==r.length&&0!==t.length&&(r.length===t.length&&0===w(r,0,t,0,r.length))},i.setPRNG=function(r){h=r},function(){var o="undefined"!=typeof self?self.crypto||self.msCrypto:null;if(o&&o.getRandomValues){i.setPRNG(function(r,t){var n,e=new Uint8Array(t);for(n=0;n<t;n+=65536)o.getRandomValues(e.subarray(n,n+Math.min(t-n,65536)));for(n=0;n<t;n++)r[n]=e[n];yr(e)})}else"undefined"!=typeof require&&(o=require("crypto"))&&o.randomBytes&&i.setPRNG(function(r,t){var n,e=o.randomBytes(t);for(n=0;n<t;n++)r[n]=e[n];yr(e)})}()}("undefined"!=typeof module&&module.exports?module.exports:self.nacl=self.nacl||{});
+</script>
+<script>
+/* blakejs v1.2.1 (blake2b) — MIT/CC0, by DC <https://github.com/dcposch>,
+   adapted from the RFC 7693 reference implementation. Wrapped in a tiny
+   CJS shim so the upstream files stay byte-identical. */
+const blakejs = (() => {
+  const utilModule = { exports: {} };
+  ((module) => {
+const ERROR_MSG_INPUT = 'Input must be an string, Buffer or Uint8Array'
+
+// For convenience, let people hash a string, not just a Uint8Array
+function normalizeInput (input) {
+  let ret
+  if (input instanceof Uint8Array) {
+    ret = input
+  } else if (typeof input === 'string') {
+    const encoder = new TextEncoder()
+    ret = encoder.encode(input)
+  } else {
+    throw new Error(ERROR_MSG_INPUT)
+  }
+  return ret
+}
+
+// Converts a Uint8Array to a hexadecimal string
+// For example, toHex([255, 0, 255]) returns "ff00ff"
+function toHex (bytes) {
+  return Array.prototype.map
+    .call(bytes, function (n) {
+      return (n < 16 ? '0' : '') + n.toString(16)
+    })
+    .join('')
+}
+
+// Converts any value in [0...2^32-1] to an 8-character hex string
+function uint32ToHex (val) {
+  return (0x100000000 + val).toString(16).substring(1)
+}
+
+// For debugging: prints out hash state in the same format as the RFC
+// sample computation exactly, so that you can diff
+function debugPrint (label, arr, size) {
+  let msg = '\n' + label + ' = '
+  for (let i = 0; i < arr.length; i += 2) {
+    if (size === 32) {
+      msg += uint32ToHex(arr[i]).toUpperCase()
+      msg += ' '
+      msg += uint32ToHex(arr[i + 1]).toUpperCase()
+    } else if (size === 64) {
+      msg += uint32ToHex(arr[i + 1]).toUpperCase()
+      msg += uint32ToHex(arr[i]).toUpperCase()
+    } else throw new Error('Invalid size ' + size)
+    if (i % 6 === 4) {
+      msg += '\n' + new Array(label.length + 4).join(' ')
+    } else if (i < arr.length - 2) {
+      msg += ' '
+    }
+  }
+  console.log(msg)
+}
+
+// For performance testing: generates N bytes of input, hashes M times
+// Measures and prints MB/second hash performance each time
+function testSpeed (hashFn, N, M) {
+  let startMs = new Date().getTime()
+
+  const input = new Uint8Array(N)
+  for (let i = 0; i < N; i++) {
+    input[i] = i % 256
+  }
+  const genMs = new Date().getTime()
+  console.log('Generated random input in ' + (genMs - startMs) + 'ms')
+  startMs = genMs
+
+  for (let i = 0; i < M; i++) {
+    const hashHex = hashFn(input)
+    const hashMs = new Date().getTime()
+    const ms = hashMs - startMs
+    startMs = hashMs
+    console.log('Hashed in ' + ms + 'ms: ' + hashHex.substring(0, 20) + '...')
+    console.log(
+      Math.round((N / (1 << 20) / (ms / 1000)) * 100) / 100 + ' MB PER SECOND'
+    )
+  }
+}
+
+module.exports = {
+  normalizeInput: normalizeInput,
+  toHex: toHex,
+  debugPrint: debugPrint,
+  testSpeed: testSpeed
+}
+
+  })(utilModule);
+  const require = () => utilModule.exports;
+  const module = { exports: {} };
+// Blake2B in pure Javascript
+// Adapted from the reference implementation in RFC7693
+// Ported to Javascript by DC - https://github.com/dcposch
+
+const util = require('./util')
+
+// 64-bit unsigned addition
+// Sets v[a,a+1] += v[b,b+1]
+// v should be a Uint32Array
+function ADD64AA (v, a, b) {
+  const o0 = v[a] + v[b]
+  let o1 = v[a + 1] + v[b + 1]
+  if (o0 >= 0x100000000) {
+    o1++
+  }
+  v[a] = o0
+  v[a + 1] = o1
+}
+
+// 64-bit unsigned addition
+// Sets v[a,a+1] += b
+// b0 is the low 32 bits of b, b1 represents the high 32 bits
+function ADD64AC (v, a, b0, b1) {
+  let o0 = v[a] + b0
+  if (b0 < 0) {
+    o0 += 0x100000000
+  }
+  let o1 = v[a + 1] + b1
+  if (o0 >= 0x100000000) {
+    o1++
+  }
+  v[a] = o0
+  v[a + 1] = o1
+}
+
+// Little-endian byte access
+function B2B_GET32 (arr, i) {
+  return arr[i] ^ (arr[i + 1] << 8) ^ (arr[i + 2] << 16) ^ (arr[i + 3] << 24)
+}
+
+// G Mixing function
+// The ROTRs are inlined for speed
+function B2B_G (a, b, c, d, ix, iy) {
+  const x0 = m[ix]
+  const x1 = m[ix + 1]
+  const y0 = m[iy]
+  const y1 = m[iy + 1]
+
+  ADD64AA(v, a, b) // v[a,a+1] += v[b,b+1] ... in JS we must store a uint64 as two uint32s
+  ADD64AC(v, a, x0, x1) // v[a, a+1] += x ... x0 is the low 32 bits of x, x1 is the high 32 bits
+
+  // v[d,d+1] = (v[d,d+1] xor v[a,a+1]) rotated to the right by 32 bits
+  let xor0 = v[d] ^ v[a]
+  let xor1 = v[d + 1] ^ v[a + 1]
+  v[d] = xor1
+  v[d + 1] = xor0
+
+  ADD64AA(v, c, d)
+
+  // v[b,b+1] = (v[b,b+1] xor v[c,c+1]) rotated right by 24 bits
+  xor0 = v[b] ^ v[c]
+  xor1 = v[b + 1] ^ v[c + 1]
+  v[b] = (xor0 >>> 24) ^ (xor1 << 8)
+  v[b + 1] = (xor1 >>> 24) ^ (xor0 << 8)
+
+  ADD64AA(v, a, b)
+  ADD64AC(v, a, y0, y1)
+
+  // v[d,d+1] = (v[d,d+1] xor v[a,a+1]) rotated right by 16 bits
+  xor0 = v[d] ^ v[a]
+  xor1 = v[d + 1] ^ v[a + 1]
+  v[d] = (xor0 >>> 16) ^ (xor1 << 16)
+  v[d + 1] = (xor1 >>> 16) ^ (xor0 << 16)
+
+  ADD64AA(v, c, d)
+
+  // v[b,b+1] = (v[b,b+1] xor v[c,c+1]) rotated right by 63 bits
+  xor0 = v[b] ^ v[c]
+  xor1 = v[b + 1] ^ v[c + 1]
+  v[b] = (xor1 >>> 31) ^ (xor0 << 1)
+  v[b + 1] = (xor0 >>> 31) ^ (xor1 << 1)
+}
+
+// Initialization Vector
+const BLAKE2B_IV32 = new Uint32Array([
+  0xf3bcc908, 0x6a09e667, 0x84caa73b, 0xbb67ae85, 0xfe94f82b, 0x3c6ef372,
+  0x5f1d36f1, 0xa54ff53a, 0xade682d1, 0x510e527f, 0x2b3e6c1f, 0x9b05688c,
+  0xfb41bd6b, 0x1f83d9ab, 0x137e2179, 0x5be0cd19
+])
+
+const SIGMA8 = [
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 14, 10, 4, 8, 9, 15, 13,
+  6, 1, 12, 0, 2, 11, 7, 5, 3, 11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1,
+  9, 4, 7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8, 9, 0, 5, 7, 2, 4,
+  10, 15, 14, 1, 11, 12, 6, 8, 3, 13, 2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5,
+  15, 14, 1, 9, 12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11, 13, 11, 7,
+  14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10, 6, 15, 14, 9, 11, 3, 0, 8, 12, 2,
+  13, 7, 1, 4, 10, 5, 10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0, 0,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 14, 10, 4, 8, 9, 15, 13, 6,
+  1, 12, 0, 2, 11, 7, 5, 3
+]
+
+// These are offsets into a uint64 buffer.
+// Multiply them all by 2 to make them offsets into a uint32 buffer,
+// because this is Javascript and we don't have uint64s
+const SIGMA82 = new Uint8Array(
+  SIGMA8.map(function (x) {
+    return x * 2
+  })
+)
+
+// Compression function. 'last' flag indicates last block.
+// Note we're representing 16 uint64s as 32 uint32s
+const v = new Uint32Array(32)
+const m = new Uint32Array(32)
+function blake2bCompress (ctx, last) {
+  let i = 0
+
+  // init work variables
+  for (i = 0; i < 16; i++) {
+    v[i] = ctx.h[i]
+    v[i + 16] = BLAKE2B_IV32[i]
+  }
+
+  // low 64 bits of offset
+  v[24] = v[24] ^ ctx.t
+  v[25] = v[25] ^ (ctx.t / 0x100000000)
+  // high 64 bits not supported, offset may not be higher than 2**53-1
+
+  // last block flag set ?
+  if (last) {
+    v[28] = ~v[28]
+    v[29] = ~v[29]
+  }
+
+  // get little-endian words
+  for (i = 0; i < 32; i++) {
+    m[i] = B2B_GET32(ctx.b, 4 * i)
+  }
+
+  // twelve rounds of mixing
+  // uncomment the DebugPrint calls to log the computation
+  // and match the RFC sample documentation
+  // util.debugPrint('          m[16]', m, 64)
+  for (i = 0; i < 12; i++) {
+    // util.debugPrint('   (i=' + (i < 10 ? ' ' : '') + i + ') v[16]', v, 64)
+    B2B_G(0, 8, 16, 24, SIGMA82[i * 16 + 0], SIGMA82[i * 16 + 1])
+    B2B_G(2, 10, 18, 26, SIGMA82[i * 16 + 2], SIGMA82[i * 16 + 3])
+    B2B_G(4, 12, 20, 28, SIGMA82[i * 16 + 4], SIGMA82[i * 16 + 5])
+    B2B_G(6, 14, 22, 30, SIGMA82[i * 16 + 6], SIGMA82[i * 16 + 7])
+    B2B_G(0, 10, 20, 30, SIGMA82[i * 16 + 8], SIGMA82[i * 16 + 9])
+    B2B_G(2, 12, 22, 24, SIGMA82[i * 16 + 10], SIGMA82[i * 16 + 11])
+    B2B_G(4, 14, 16, 26, SIGMA82[i * 16 + 12], SIGMA82[i * 16 + 13])
+    B2B_G(6, 8, 18, 28, SIGMA82[i * 16 + 14], SIGMA82[i * 16 + 15])
+  }
+  // util.debugPrint('   (i=12) v[16]', v, 64)
+
+  for (i = 0; i < 16; i++) {
+    ctx.h[i] = ctx.h[i] ^ v[i] ^ v[i + 16]
+  }
+  // util.debugPrint('h[8]', ctx.h, 64)
+}
+
+// reusable parameterBlock
+const parameterBlock = new Uint8Array([
+  0,
+  0,
+  0,
+  0, //  0: outlen, keylen, fanout, depth
+  0,
+  0,
+  0,
+  0, //  4: leaf length, sequential mode
+  0,
+  0,
+  0,
+  0, //  8: node offset
+  0,
+  0,
+  0,
+  0, // 12: node offset
+  0,
+  0,
+  0,
+  0, // 16: node depth, inner length, rfu
+  0,
+  0,
+  0,
+  0, // 20: rfu
+  0,
+  0,
+  0,
+  0, // 24: rfu
+  0,
+  0,
+  0,
+  0, // 28: rfu
+  0,
+  0,
+  0,
+  0, // 32: salt
+  0,
+  0,
+  0,
+  0, // 36: salt
+  0,
+  0,
+  0,
+  0, // 40: salt
+  0,
+  0,
+  0,
+  0, // 44: salt
+  0,
+  0,
+  0,
+  0, // 48: personal
+  0,
+  0,
+  0,
+  0, // 52: personal
+  0,
+  0,
+  0,
+  0, // 56: personal
+  0,
+  0,
+  0,
+  0 // 60: personal
+])
+
+// Creates a BLAKE2b hashing context
+// Requires an output length between 1 and 64 bytes
+// Takes an optional Uint8Array key
+// Takes an optinal Uint8Array salt
+// Takes an optinal Uint8Array personal
+function blake2bInit (outlen, key, salt, personal) {
+  if (outlen === 0 || outlen > 64) {
+    throw new Error('Illegal output length, expected 0 < length <= 64')
+  }
+  if (key && key.length > 64) {
+    throw new Error('Illegal key, expected Uint8Array with 0 < length <= 64')
+  }
+  if (salt && salt.length !== 16) {
+    throw new Error('Illegal salt, expected Uint8Array with length is 16')
+  }
+  if (personal && personal.length !== 16) {
+    throw new Error('Illegal personal, expected Uint8Array with length is 16')
+  }
+
+  // state, 'param block'
+  const ctx = {
+    b: new Uint8Array(128),
+    h: new Uint32Array(16),
+    t: 0, // input count
+    c: 0, // pointer within buffer
+    outlen: outlen // output length in bytes
+  }
+
+  // initialize parameterBlock before usage
+  parameterBlock.fill(0)
+  parameterBlock[0] = outlen
+  if (key) parameterBlock[1] = key.length
+  parameterBlock[2] = 1 // fanout
+  parameterBlock[3] = 1 // depth
+  if (salt) parameterBlock.set(salt, 32)
+  if (personal) parameterBlock.set(personal, 48)
+
+  // initialize hash state
+  for (let i = 0; i < 16; i++) {
+    ctx.h[i] = BLAKE2B_IV32[i] ^ B2B_GET32(parameterBlock, i * 4)
+  }
+
+  // key the hash, if applicable
+  if (key) {
+    blake2bUpdate(ctx, key)
+    // at the end
+    ctx.c = 128
+  }
+
+  return ctx
+}
+
+// Updates a BLAKE2b streaming hash
+// Requires hash context and Uint8Array (byte array)
+function blake2bUpdate (ctx, input) {
+  for (let i = 0; i < input.length; i++) {
+    if (ctx.c === 128) {
+      // buffer full ?
+      ctx.t += ctx.c // add counters
+      blake2bCompress(ctx, false) // compress (not last)
+      ctx.c = 0 // counter to zero
+    }
+    ctx.b[ctx.c++] = input[i]
+  }
+}
+
+// Completes a BLAKE2b streaming hash
+// Returns a Uint8Array containing the message digest
+function blake2bFinal (ctx) {
+  ctx.t += ctx.c // mark last block offset
+
+  while (ctx.c < 128) {
+    // fill up with zeros
+    ctx.b[ctx.c++] = 0
+  }
+  blake2bCompress(ctx, true) // final block flag = 1
+
+  // little endian convert and store
+  const out = new Uint8Array(ctx.outlen)
+  for (let i = 0; i < ctx.outlen; i++) {
+    out[i] = ctx.h[i >> 2] >> (8 * (i & 3))
+  }
+  return out
+}
+
+// Computes the BLAKE2B hash of a string or byte array, and returns a Uint8Array
+//
+// Returns a n-byte Uint8Array
+//
+// Parameters:
+// - input - the input bytes, as a string, Buffer or Uint8Array
+// - key - optional key Uint8Array, up to 64 bytes
+// - outlen - optional output length in bytes, default 64
+// - salt - optional salt bytes, string, Buffer or Uint8Array
+// - personal - optional personal bytes, string, Buffer or Uint8Array
+function blake2b (input, key, outlen, salt, personal) {
+  // preprocess inputs
+  outlen = outlen || 64
+  input = util.normalizeInput(input)
+  if (salt) {
+    salt = util.normalizeInput(salt)
+  }
+  if (personal) {
+    personal = util.normalizeInput(personal)
+  }
+
+  // do the math
+  const ctx = blake2bInit(outlen, key, salt, personal)
+  blake2bUpdate(ctx, input)
+  return blake2bFinal(ctx)
+}
+
+// Computes the BLAKE2B hash of a string or byte array
+//
+// Returns an n-byte hash in hex, all lowercase
+//
+// Parameters:
+// - input - the input bytes, as a string, Buffer, or Uint8Array
+// - key - optional key Uint8Array, up to 64 bytes
+// - outlen - optional output length in bytes, default 64
+// - salt - optional salt bytes, string, Buffer or Uint8Array
+// - personal - optional personal bytes, string, Buffer or Uint8Array
+function blake2bHex (input, key, outlen, salt, personal) {
+  const output = blake2b(input, key, outlen, salt, personal)
+  return util.toHex(output)
+}
+
+module.exports = {
+  blake2b: blake2b,
+  blake2bHex: blake2bHex,
+  blake2bInit: blake2bInit,
+  blake2bUpdate: blake2bUpdate,
+  blake2bFinal: blake2bFinal
+}
+
+  return module.exports;
+})();
+</script>
+<script>
+/* ── sealed box (libsodium crypto_box_seal over the vendored primitives)
+   MARKER:SEALEDBOX-BEGIN — infra/tests/sealedbox.test.mjs extracts and
+   verifies this exact block; keep it dependency-free. */
+function sealedBox(recipientPk, message) {
+  // crypto_box_seal: ephemeral_pk ‖ box(m, nonce=blake2b(epk‖pk, 24), pk, esk)
+  const ekp = nacl.box.keyPair();
+  const nonce = sealedNonce(ekp.publicKey, recipientPk);
+  const boxed = nacl.box(message, nonce, recipientPk, ekp.secretKey);
+  const out = new Uint8Array(32 + boxed.length);
+  out.set(ekp.publicKey, 0);
+  out.set(boxed, 32);
+  return out;
+}
+function sealedNonce(epk, rpk) {
+  const input = new Uint8Array(64);
+  input.set(epk, 0);
+  input.set(rpk, 32);
+  return blakejs.blake2b(input, null, 24);
+}
+function sealedOpen(sealed, recipientPk, recipientSk) {
+  // test/verification helper — GitHub is the real opener in production
+  const epk = sealed.slice(0, 32);
+  const nonce = sealedNonce(epk, recipientPk);
+  return nacl.box.open(sealed.slice(32), nonce, epk, recipientSk);
+}
+function b64decode(s) {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function b64encode(bytes) {
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+/* MARKER:SEALEDBOX-END */
+</script>
+<script>
+'use strict';
+/* ── wizard app ──────────────────────────────────────────────────────── */
+const ENVS = ['iac-production', 'iac-staging'];
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem('munni-setup:' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('munni-setup:' + k, JSON.stringify(v)); } catch { /* private mode */ } },
+};
+const S = {
+  pat: '',
+  slug: LS.get('slug', 'okkes/munnimok'),
+  ref: LS.get('ref', 'dev'),
+  platform: LS.get('platform', 'nas'),
+  features: LS.get('features', { gocardless: true, enablebanking: false, logodev: false, fcm: false, google: false, apple: false, email: false, android: false, ios: false }),
+  domain: LS.get('domain', ''),
+  user: null,
+  envList: [],           // the dynamic local environments, mirrored from /status
+  pendingNativeBuild: null,
+  repoSecrets: new Set(),
+  envs: {},          // name -> { secrets:Set, vars:Set }
+  runs: { iac: [], nas: [], native: [] },
+  localStore: new Set(),   // names present in the LOCAL secret store (via the helper)
+  pollTimer: null,
+};
+
+/* feature toggles → which credential groups show */
+const FEATURES = [
+  { id: 'gocardless', label: 'Bank sync via GoCardless', hint: 'live transactions from 2500+ EU banks (read-only PSD2 AIS) — the heart of the product' },
+  { id: 'enablebanking', label: 'Enable Banking as a second bank provider', hint: 'optional fallback aggregator; banks missing at GoCardless', localHint: 'Enable Banking is https-only — with LAN mode on the family serves real https (sslip.io hostnames), so the full bank-consent roundtrip works locally too' },
+  { id: 'logodev', label: 'Merchant logos (logo.dev)', hint: 'brand logos on transactions and recurring costs' },
+  { id: 'fcm', label: 'Native push notifications (Firebase FCM)', hint: 'push for the Android/iOS shells — web push works without this' },
+  { id: 'google', label: 'Sign in with Google', hint: 'social login button on the sign-in screen' },
+  { id: 'apple', label: 'Sign in with Apple', hint: 'required by Apple if you ship the iOS app with any social login', targets: ['nas'], offHint: 'needs the https NAS track — Apple refuses http return URLs' },
+  { id: 'email', label: 'Crash-report emails', hint: 'GlitchTip mails on new errors (needs an SMTP url); without it, reports stay in the UI' },
+  { id: 'android', label: 'Android app', hint: 'the native Android shell — CI builds and (once the keystore exists) publishes it; only the FIRST Play upload is manual, by store rule', localHint: 'its own store channel app.munni.local: CI bakes the build against THIS machine (LAN mode) and publishes it to the Play internal track' },
+  { id: 'ios', label: 'iOS app', hint: 'the native iOS shell — CI signs and uploads straight to TestFlight (Apple allows no sideloading)', localHint: 'its own store channel app.munni.local: CI bakes the LAN build and uploads it to TestFlight' },
+];
+
+/* credential cards (step 3) — what/why/how per provider */
+const GROUPS = [
+  {
+    id: 'domain', title: 'Your domain', targets: ['nas'], check: 'browser:domain',
+    why: 'Every service becomes a subdomain of your NAS DDNS domain (munni-iac.…, logto-iac.…). The domain is treated as a secret because this repo is public.',
+    how: ['DSM → Control Panel → External Access → DDNS — add or read your hostname (e.g. yourname.synology.me).', 'Paste it below; the field also personalizes every link on this page.'],
+    fields: [{ name: 'IAC_DOMAIN', scope: 'repo', ph: 'yourname.synology.me', mirror: 'domain' }],
+  },
+  {
+    id: 'synology', title: 'Synology deploy account', targets: ['nas'], check: 'synology',
+    why: 'The pipeline uploads bundles via the FileStation API and creates reverse-proxy rules via the DSM API — no SSH. Needs a dedicated DSM account with administrator rights and 2FA off (the login API cannot answer an OTP prompt).',
+    how: ['DSM → Control Panel → User & Group → create e.g. "deploy" with administrator group membership; disable 2FA for it.', 'URL is your DSM address including port, e.g. https://yourname.synology.me:5001.', 'Path is the shared-folder path bundles land in, e.g. /docker/munni/published.'],
+    fields: [
+      { name: 'SYNOLOGY_URL', scope: 'repo', ph: 'https://yourname.synology.me:5001' },
+      { name: 'SYNOLOGY_USER', scope: 'repo', ph: 'deploy' },
+      { name: 'SYNOLOGY_PASS', scope: 'repo', secret: true },
+      { name: 'SYNOLOGY_PATH', scope: 'repo', ph: '/docker/munni/published' },
+    ],
+  },
+  {
+    id: 'ghcr', title: 'Container registry pulls', check: 'browser:ghcr',
+    why: 'The host (NAS or this machine) logs into ghcr.io to pull the munni images. A minimal read-only token keeps that safe.',
+    how: ['Open github.com/settings/tokens (classic) → Generate new token → scope: read:packages only.', 'Fine-grained tokens do not reliably work for ghcr docker login yet — use classic here.'],
+    fields: [{ name: 'NAS_GHCR_PAT', scope: 'repo', secret: true }],
+  },
+  {
+    id: 'gocardless', title: 'GoCardless Bank Account Data', feature: 'gocardless', check: 'gocardless',
+    why: 'The PSD2 account-information (AIS) aggregator behind bank sync: users link their bank once and transactions flow in read-only. Free tier covers personal use.',
+    how: [
+      'Sign up at <b>bankaccountdata.gocardless.com</b> — the Bank Account Data product, NOT the gocardless.com payments dashboard (same company, different portal; the free tier covers ~50 bank connections).',
+      'Developers → <b>User secrets</b> → Create new → name it (e.g. munni) → copy the <b>Secret ID</b> and <b>Secret Key</b> (the key is shown once).',
+      'Nothing else to configure: GoCardless needs NO redirect-URL registration — munni passes the return address with every connection, on any platform.',
+    ],
+    fields: [
+      { name: 'NAS_GOCARDLESS_SECRET_ID', scope: 'repo' },
+      { name: 'NAS_GOCARDLESS_SECRET_KEY', scope: 'repo', secret: true },
+    ],
+  },
+  {
+    id: 'enablebanking', title: 'Enable Banking', feature: 'enablebanking', check: 'enablebanking',
+    why: 'A second PSD2 aggregator — useful when a bank is missing or flaky at GoCardless. Fully optional.',
+    how: [
+      'Create an account at enablebanking.com and open its Control Panel → <b>Applications</b> → Register new application.',
+      'Environment: <b>Sandbox</b> only reaches Enable Banking’s test banks — for real banks register a <b>production</b> application (Enable Banking may ask a few questions before enabling it).',
+      {
+        nas: 'Allowed <b>redirect URLs</b> — after the bank consent, munni returns the user to the app origin + <code>/gc-callback</code>. Register BOTH twins: <code class="dom-inline">https://munni-iac.&lt;domain&gt;/gc-callback</code> and <code class="dom-inline">https://munni-iac-test.&lt;domain&gt;/gc-callback</code>. An unregistered URL fails at connect time with a 403 that names the problem.',
+        local: 'Enable Banking accepts <b>https URLs only</b> — and with <b>LAN mode</b> on (step 9) the whole family IS https: <code>https://munni-&lt;env&gt;.&lt;ip-dashed&gt;.sslip.io</code>. Register the environments you test in, e.g. <code>https://munni-prod.192-168-2-2.sslip.io/gc-callback</code> — the LAN card prints your exact hostnames (a changed wifi address changes them, hence the DHCP reservation). In localhost-only mode the twins stay plain http, which Enable Banking refuses (“unsupported scheme”) — there you can still store + <b>Check</b> the credentials, which talks to the API directly. Registering your future hosted urls alongside (<code class="dom-inline">https://munni-iac.&lt;domain&gt;/gc-callback</code> + the -test twin) is fine — one application serves all of them.',
+      },
+      'Registering creates the application’s key pair — <b>download the private key (.pem)</b>; it is shown/offered ONCE. Paste its FULL contents below, BEGIN/END lines included.',
+      'The <b>Application ID</b> (a UUID) is on the application’s page in the Control Panel after registration.',
+    ],
+    fields: [
+      { name: 'NAS_ENABLEBANKING_APPLICATION_ID', scope: 'repo' },
+      { name: 'NAS_ENABLEBANKING_PRIVATE_KEY_PEM', scope: 'repo', area: true },
+    ],
+  },
+  {
+    id: 'playstore', title: 'Google Play publishing', feature: 'android', check: 'playstore',
+    why: 'CI publishes the Android builds with a Play service account — and this page uses the SAME credential to notice when you finish a one-time store upload, so auto-publish turns on by itself. One manual invite, once, is Google’s hard floor: the Play permissions API itself needs an already-invited admin credential, so the FIRST link can never be automated.',
+    how: [
+      '<a href="https://console.cloud.google.com/iam-admin/serviceaccounts" target="_blank" rel="noreferrer">Google Cloud → IAM → Service accounts</a> → create one in any project (its own org is NOT needed) → copy its email (<code>…@…iam.gserviceaccount.com</code>). No “API access linking” in Play Console anymore — inviting the email is the whole link.',
+      'Same project: <a href="https://console.cloud.google.com/apis/library/androidpublisher.googleapis.com" target="_blank" rel="noreferrer">enable the <b>Google Play Android Developer API</b></a> — one click; both CI’s publishing and this page’s store checks call it (a disabled API answers 403 for everything).',
+      '<a href="https://play.google.com/console" target="_blank" rel="noreferrer">Play Console</a> → <b>Users and permissions</b> → Invite new user → that email. Recommended: ACCOUNT-level <b>Release to testing tracks</b> + <b>View app information</b> — releases-only (no financials, no user management), and every new munni channel (<code>app.munni.local.&lt;env&gt;</code>) is covered without re-inviting. Prefer per-app scoping? Grant under App permissions instead — but then each new environment needs a manual grant (per-app auto-granting via the API would require holding an even more powerful admin credential, which defeats the point).',
+      'Back in Google Cloud: the service account → <b>Keys</b> → Add key → <b>JSON</b> — paste the WHOLE downloaded file below.',
+    ],
+    fields: [
+      { name: 'PLAY_SERVICE_ACCOUNT_JSON', scope: 'repo', area: true },
+    ],
+  },
+  {
+    id: 'ascstore', title: 'App Store Connect key', feature: 'ios', check: 'ascstore',
+    why: 'CI uploads iOS builds to TestFlight with an App Store Connect API key — and this page uses it to check when the app record exists.',
+    how: [
+      '<a href="https://appstoreconnect.apple.com/access/integrations/api" target="_blank" rel="noreferrer">App Store Connect → Integrations</a> → generate an API key with <b>App Manager</b> access; note the Key ID and the Issuer ID shown above the list.',
+      'Download the <code>.p8</code> (offered ONCE), open it in any text editor and paste its WHOLE content below — <code>-----BEGIN PRIVATE KEY-----</code> through <code>-----END PRIVATE KEY-----</code>. Conversion happens here automatically.',
+      'The Team ID (10 characters) is under Membership details on developer.apple.com.',
+    ],
+    fields: [
+      { name: 'ASC_KEY_ID', scope: 'repo' },
+      { name: 'ASC_ISSUER_ID', scope: 'repo' },
+      { name: 'ASC_KEY_P8', scope: 'repo', area: true },
+      { name: 'APPLE_TEAM_ID', scope: 'repo' },
+    ],
+  },
+  {
+    id: 'fcm', title: 'Firebase Cloud Messaging', feature: 'fcm', check: 'fcm',
+    why: 'Push notifications for the NATIVE apps route through FCM (web push uses self-minted VAPID keys — no Google involved there).',
+    how: [
+      'console.firebase.google.com → create/open a project (any name; no Android/iOS app registration is needed for THIS step).',
+      'Project settings (gear) → <b>Service accounts</b> → Generate new private key → a JSON file downloads — paste its WHOLE contents here.',
+      'This JSON is only the SERVER’s sender credential; the native apps’ own google-services/plist files are a separate step of the native build docs.',
+    ],
+    fields: [{ name: 'NAS_FCM_SERVICE_ACCOUNT_JSON', scope: 'repo', area: true }],
+  },
+  {
+    id: 'logodev', title: 'logo.dev', feature: 'logodev', check: 'logodev',
+    why: 'Merchant and brand logos next to transactions and recurring costs. Free tier is plenty.',
+    how: ['logo.dev → sign up → dashboard → API keys: the secret key (server) and the publishable token (client).'],
+    fields: [
+      { name: 'NAS_LOGODEV_SECRET_KEY', scope: 'repo', secret: true },
+      { name: 'NAS_LOGODEV_PUBLIC_TOKEN', scope: 'repo' },
+    ],
+  },
+  {
+    id: 'google', title: 'Google sign-in', feature: 'google', check: 'google',
+    why: 'An OAuth client that lets Logto offer "Continue with Google". Wired into the sign-in screen automatically once stored.',
+    how: [
+      'console.cloud.google.com → create/pick any project → APIs &amp; Services. First time: configure the <b>OAuth consent screen</b> (External, app name + your email) — Google requires it before clients can exist.',
+      'Credentials → Create credentials → <b>OAuth client ID</b> → type <b>Web application</b>.',
+      {
+        nas: 'Authorized <b>redirect URI</b> (this is Logto’s Google callback): <code class="dom-inline">https://logto-iac.&lt;domain&gt;/callback/google-universal</code>',
+        local: 'Authorized <b>redirect URI</b> (this is the LOCAL Logto’s Google callback — Google allows localhost): <code>http://localhost:3201/callback/google-universal</code>',
+      },
+      'Copy the client ID + client secret.',
+    ],
+    fields: [
+      { name: 'LOGTO_GOOGLE_CLIENT_ID', scope: 'pair' },
+      { name: 'LOGTO_GOOGLE_CLIENT_SECRET', scope: 'pair', secret: true },
+    ],
+  },
+  {
+    id: 'apple', title: 'Apple sign-in', feature: 'apple', targets: ['nas'], check: 'apple',
+    why: 'Sign in with Apple for web + iOS. Requires an Apple Developer membership.',
+    how: ['developer.apple.com → Identifiers → new <b>Services ID</b> — its identifier is the client ID below. Enable Sign in with Apple.', 'Return URL: <code class="dom-inline">https://logto-iac.&lt;domain&gt;/callback/apple-universal</code>', 'Keys → create a key with Sign in with Apple → note the Key ID, download the .p8 (paste its contents).', 'Team ID: top right of the developer console (Membership).'],
+    fields: [
+      { name: 'LOGTO_APPLE_CLIENT_ID', scope: 'pair', ph: 'e.g. app.munni.iac.signin' },
+      { name: 'LOGTO_APPLE_TEAM_ID', scope: 'pair' },
+      { name: 'LOGTO_APPLE_KEY_ID', scope: 'pair' },
+      { name: 'LOGTO_APPLE_PRIVATE_KEY', scope: 'pair', area: true },
+    ],
+  },
+  {
+    id: 'email', title: 'Crash-report emails', feature: 'email', check: 'browser:emailUrl',
+    why: 'GlitchTip sends "new issue" mails through this SMTP url. Leave unset and reports simply stay in the web UI.',
+    how: ['Format: smtp://USER:PASSWORD@HOST:PORT (smtps:// for TLS). Any mailbox provider works.'],
+    fields: [{ name: 'NAS_GLITCHTIP_EMAIL_URL', scope: 'pair', ph: 'smtp://user:pass@smtp.example.com:587' }],
+  },
+];
+
+/* ── github api ── */
+async function gh(path, init = {}) {
+  let res;
+  try {
+    res = await fetch('https://api.github.com' + path, {
+      ...init,
+      headers: {
+        accept: 'application/vnd.github+json',
+        'x-github-api-version': '2022-11-28',
+        authorization: 'Bearer ' + S.pat,
+        ...(init.body ? { 'content-type': 'application/json' } : {}),
+        ...(init.headers || {}),
+      },
+    });
+  } catch {
+    // fetch() rejecting = the call never reached GitHub — surface a
+    // diagnosis instead of the browser's bare "Failed to fetch"
+    throw new Error(`the browser blocked the GitHub call (${init.method || 'GET'} ${path}) before it left — offline, or an ad/privacy extension? Retry, or allow api.github.com for this page.`);
+  }
+  if (res.status === 404 && init.allow404) return null;
+  if (!res.ok) throw new Error(`${init.method || 'GET'} ${path} → ${res.status} ${(await res.text()).slice(0, 300)}`);
+  if (res.status === 204) return null;
+  return res.json().catch(() => null);
+}
+
+// NEVER cached: a deleted-and-recreated repo (same name!) carries a NEW
+// sealing key — a remembered one produces "improperly encrypted secret"
+// 422s (found live 2026-08-30). One extra GET per store is nothing.
+const publicKeyFor = (base) => gh(`${base}/secrets/public-key`);
+async function putSecretAt(base, name, value) {
+  const pk = await publicKeyFor(base);
+  const sealed = sealedBox(b64decode(pk.key), new TextEncoder().encode(value));
+  await gh(`${base}/secrets/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ encrypted_value: b64encode(sealed), key_id: pk.key_id }),
+  });
+}
+const ensureEnv = (env) => gh(`/repos/${S.slug}/environments/${encodeURIComponent(env)}`, { method: 'PUT', body: '{}' });
+async function ghUpsertRepoVar(name, value) {
+  const base = `/repos/${S.slug}/actions/variables`;
+  try {
+    await gh(`${base}/${encodeURIComponent(name)}`, { method: 'PATCH', body: JSON.stringify({ name, value }) });
+  } catch {
+    await gh(base, { method: 'POST', body: JSON.stringify({ name, value }) });
+  }
+}
+async function storeSecret(name, value, scope) {
+  // repository Actions secrets live under /actions/secrets — the bare
+  // /repos/{slug}/secrets path 404s (found live 2026-08-29: Store as
+  // IAC_GH_PAT never worked for the repo scope)
+  if (scope === 'repo') { await putSecretAt(`/repos/${S.slug}/actions`, name, value); return; }
+  for (const env of ENVS) {
+    await ensureEnv(env);
+    await putSecretAt(`/repos/${S.slug}/environments/${encodeURIComponent(env)}`, name, value);
+  }
+}
+const dispatch = (file, inputs) =>
+  gh(`/repos/${S.slug}/actions/workflows/${encodeURIComponent(file)}/dispatches`, { method: 'POST', body: JSON.stringify({ ref: S.ref, inputs }) });
+const workflowRuns = (file) =>
+  gh(`/repos/${S.slug}/actions/workflows/${encodeURIComponent(file)}/runs?per_page=5`, { allow404: true });
+
+/* ── live status ── */
+async function refresh() {
+  if (!S.pat) return;
+  const names = (r, key) => new Set((r?.[key] ?? []).map((x) => x.name));
+  const [repoSecrets, ...perEnv] = await Promise.all([
+    gh(`/repos/${S.slug}/actions/secrets?per_page=100`, { allow404: true }),
+    ...ENVS.flatMap((env) => [
+      gh(`/repos/${S.slug}/environments/${env}/secrets?per_page=100`, { allow404: true }),
+      gh(`/repos/${S.slug}/environments/${env}/variables?per_page=100`, { allow404: true }),
+    ]),
+  ]);
+  S.repoSecrets = names(repoSecrets, 'secrets');
+  ENVS.forEach((env, i) => {
+    S.envs[env] = { secrets: names(perEnv[i * 2], 'secrets'), vars: names(perEnv[i * 2 + 1], 'variables') };
+  });
+  const [iacRuns, nasRuns, andRuns, iosRuns] = await Promise.all([
+    workflowRuns('iac.yml'), workflowRuns('deploy-nas.yml'), workflowRuns('native-android.yml'), workflowRuns('native-ios.yml'),
+  ]);
+  S.runs = { iac: iacRuns?.workflow_runs ?? [], nas: nasRuns?.workflow_runs ?? [], native: [...(andRuns?.workflow_runs ?? []), ...(iosRuns?.workflow_runs ?? [])] };
+  renderStatus();
+  scheduleLivePoll();
+}
+
+function scheduleLivePoll() {
+  const busy = [...S.runs.iac, ...S.runs.nas, ...S.runs.native].some((r) => r.status !== 'completed');
+  clearTimeout(S.pollTimer);
+  if (busy) S.pollTimer = setTimeout(() => refresh().catch(() => {}), 12000);
+}
+
+function secretPresent(name, cardScoped = false) {
+  // credential-card dots under the LOCAL platform reflect the machine's
+  // own store (via the helper), never GitHub
+  if (cardScoped && S.platform === 'local') return S.localStore.has(name);
+  if (name.startsWith('var:')) {
+    const v = name.slice(4);
+    return ENVS.some((env) => S.envs[env]?.vars?.has(v));
+  }
+  if (S.repoSecrets.has(name)) return true;
+  return ENVS.some((env) => S.envs[env]?.secrets?.has(name));
+}
+
+function renderStatus() {
+  document.querySelectorAll('[data-dot]').forEach((el) => {
+    const present = secretPresent(el.dataset.dot, Boolean(el.dataset.carddot));
+    el.className = 'dot ' + (present ? 'ok' : (el.dataset.opt ? 'opt' : 'miss'));
+    el.title = present ? 'stored' : 'not stored yet';
+  });
+  const runsHtml = (runs, filter) => runs.filter(filter).slice(0, 3).map((r) => {
+    const cls = r.status !== 'completed' ? 'warn' : (r.conclusion === 'success' ? 'ok' : 'bad');
+    const state = r.status !== 'completed' ? r.status : r.conclusion;
+    return `<div class="runrow"><span class="pill ${cls}">${state}</span><a href="${r.html_url}" target="_blank" rel="noreferrer">${r.display_title || r.name} #${r.run_number}</a><span class="envtag">${new Date(r.created_at).toLocaleString()}</span></div>`;
+  }).join('') || '<div class="runrow"><span class="pill">no runs yet</span></div>';
+  const el = (id) => document.getElementById(id);
+  el('runs-iac').innerHTML = runsHtml(S.runs.iac ?? [], () => true);
+  el('runs-nas').innerHTML = runsHtml(S.runs.nas ?? [], (r) => r.event === 'workflow_dispatch');
+  el('runs-native').innerHTML = runsHtml(S.runs.native ?? [], (r) => r.event === 'workflow_dispatch');
+  const envsReady = ENVS.every((env) => S.envs[env]?.secrets?.has('NAS_POSTGRES_PASSWORD'));
+  el('bootstrap-pill').textContent = envsReady ? 'environments minted ✓' : 'not bootstrapped yet';
+  el('bootstrap-pill').className = 'pill ' + (envsReady ? 'ok' : '');
+  const logtoDone = ENVS.every((env) => S.envs[env]?.secrets?.has('NAS_LOGTO_M2M_APP_ID'));
+  el('logto-pill').textContent = logtoDone ? 'apps are code ✓' : 'pending OOBE';
+  el('logto-pill').className = 'pill ' + (logtoDone ? 'ok' : '');
+  const gtDone = ENVS.every((env) => S.envs[env]?.vars?.has('VITE_GLITCHTIP_DSN'));
+  el('gt-pill').textContent = gtDone ? 'DSNs written back ✓' : 'pending token';
+  el('gt-pill').className = 'pill ' + (gtDone ? 'ok' : '');
+  const required = GROUPS.filter(groupVisible).flatMap((g) => g.fields).filter((f) => !f.optional);
+  const missing = required.filter((f) => !secretPresent(f.name, true));
+  el('creds-pill').textContent = missing.length ? `${required.length - missing.length}/${required.length} stored` : 'all stored ✓';
+  el('creds-pill').className = 'pill ' + (missing.length ? 'warn' : 'ok');
+}
+
+/* ── the LOCAL HELPER (infra/setup/serve.mjs) — when this page is served
+   by it, the local track gains hands: it stores values, runs bootstrap
+   and docker, and streams the output below. file:// keeps the guide. ── */
+const HELPER = globalThis.__SETUP_HELPER__ ?? null;
+const hfetch = async (path, init = {}) => {
+  const res = await fetch(path, { ...init, headers: { 'x-setup-token': HELPER.token, ...(init.body ? { 'content-type': 'application/json' } : {}), ...(init.headers || {}) } });
+  // each helper run mints a fresh token — a page from a PREVIOUS run
+  // gets 401s that used to surface as puzzling undefined errors
+  if (res.status === 401) throw new Error('the setup helper was restarted — this tab holds its old token. Close the tab and reopen the page from start.cmd.');
+  return res;
+};
+let localBusy = false;
+
+/* the local family: shared services + ANY number of environments (the
+   helper's registry drives the list — S.envList mirrors /status) */
+const SHARED_STACK = 'munni-local-shared';
+const envLabel = (name) => ({ prod: 'Production', dev: 'Development' }[name] ?? name.toUpperCase());
+const labelOf = (stackName) => (stackName === SHARED_STACK ? 'shared services' : envLabel(stackName.replace('munni-local-', '')).toLowerCase());
+
+/* minimalist line icons (stroke = brand ink, dark-mode safe) */
+const ICONS = {
+  wand: '<svg viewBox="0 0 24 24"><path d="M6 18 18 6M14 6h4v4M5 5l1.5 1.5M4 11h2M11 4v2"/></svg>',
+  server: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7.5h.01M8 16.5h.01"/></svg>',
+  layers: '<svg viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12.5 9 5 9-5"/><path d="m3 16.5 9 5 9-5"/></svg>',
+  lock: '<svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>',
+  plus: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>',
+  pulse: '<svg viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 4 12L16 12h5"/></svg>',
+  phone: '<svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 17.5h2"/></svg>',
+};
+function applyIcons(root = document) {
+  root.querySelectorAll('[data-ico]').forEach((el) => { el.innerHTML = ICONS[el.dataset.ico] ?? ''; });
+}
+
+const setPill = (id, text, ok) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'pill ' + (ok ? 'ok' : '');
+};
+
+function updateEnvCard(env, s) {
+  const stored = new Set(s.stored);
+  const up = s.services.web && s.services.api;
+  setPill(`env-pill-${env.name}`, up ? 'running ✓' : (s.rendered ? 'set up — not running' : 'not set up yet'), up);
+  const card = document.querySelector(`[data-envcard="${env.stack}"]`);
+  if (card) {
+    // state-aware actions: only the option that makes sense shows
+    card.querySelector('[data-act="start"]')?.classList.toggle('hide', up);
+    card.querySelector('[data-act="stop"]')?.classList.toggle('hide', !up);
+  }
+  const warn = document.getElementById(`env-logto-warn-${env.name}`);
+  if (warn) warn.hidden = Boolean(s.services.logto);
+  const signinDone = stored.has('NAS_LOGTO_M2M_APP_ID');
+  const sd = document.getElementById(`env-signin-dot-${env.name}`);
+  if (sd) sd.className = 'dot ' + (signinDone ? 'ok' : 'miss');
+  setPill(`env-signin-pill-${env.name}`, signinDone ? 'live ✓' : 'runs with Set up', signinDone);
+  const gtDone = stored.has('VITE_GLITCHTIP_DSN');
+  const gd = document.getElementById(`env-gt-dot-${env.name}`);
+  if (gd) gd.className = 'dot ' + (gtDone ? 'ok' : 'miss');
+  setPill(`env-gt-pill-${env.name}`, gtDone ? 'wired ✓' : 'runs with Set up', gtDone);
+}
+
+function envCardHtml(env) {
+  const s = env.name;
+  const roles = {
+    prod: 'The environment you USE — real accounts, real bank consents.',
+    dev: 'The environment you EXPERIMENT in — break it freely, the others never notice.',
+  };
+  const role = roles[s] ?? 'A full munni environment of its own — isolated sign-in, database and ports.';
+  const deletable = env.stack !== 'munni-local-prod';
+  return `
+  <div class="card" data-envcard="${env.stack}">
+    <div class="card-head">
+      <span class="ico" data-ico="server"></span>
+      <div>
+        <h3>${envLabel(s)} <span class="pill" id="env-pill-${s}"></span> <span class="envtag">${env.channel === 'latest' ? 'main releases' : 'dev releases'}</span></h3>
+        <p class="why">${role} App at <a href="${env.web}" target="_blank" rel="noreferrer">${env.web.replace('http://', '')}</a> · Logto console <a href="${env.logtoAdmin}" target="_blank" rel="noreferrer">${env.logtoAdmin.replace('http://', '')}</a> — sign-in, crash tracking, console and admin user all wired by Set up; logins under Reveal secrets.</p>
+        <p class="msg bad" id="env-logto-warn-${s}" hidden>This environment's Logto isn't answering yet — Start it (or Set up) and wait for its dot to turn green.</p>
+        <div class="statline">
+          <span>Sign-in <span class="dot" id="env-signin-dot-${s}"></span> <span class="pill" id="env-signin-pill-${s}"></span></span>
+          <span>Crash reports <span class="dot" id="env-gt-dot-${s}"></span> <span class="pill" id="env-gt-pill-${s}"></span></span>
+        </div>
+        <div class="runrow">
+          <button class="ghost hide" data-act="start" data-stack="${env.stack}">▶ Start</button>
+          <button class="ghost hide" data-act="stop" data-stack="${env.stack}">■ Stop</button>
+          <button class="ghost" data-act="setup" data-stack="${env.stack}">Re-run setup</button>
+          ${deletable
+            ? `<button class="ghost danger" data-act="nuke" data-stack="${env.stack}">Delete…</button>`
+            : '<span class="envtag" title="munni-control and the native apps ride this environment">not deletable</span>'}
+        </div>
+        <details class="how"><summary>Admin access &amp; manual fallback</summary>
+          <label class="f" for="in-subs-${s}">NAS_ADMIN_SUBS — a Logto User ID to grant admin access (Set up creates the first admin automatically while the environment has no users)</label>
+          <input type="text" id="in-subs-${s}" placeholder="usr_…" autocomplete="off"/>
+          <button class="ghost" data-act="subs" data-stack="${env.stack}">Store admin access</button>
+          <button class="ghost" data-act="signin" data-stack="${env.stack}">Re-run sign-in setup</button>
+          <button class="ghost" data-act="gt" data-stack="${env.stack}">Re-run crash tracking</button>
+          <p style="margin-top:8px;font-size:13px">Bring your own Logto M2M credential (console → Applications → Machine-to-machine, role <b>Logto Management API</b>):</p>
+          <div class="grid2">
+            <div><label class="f" for="in-m2m-id-${s}">IAC_LOGTO_INFRA_M2M_ID</label><input type="text" id="in-m2m-id-${s}" autocomplete="off"/></div>
+            <div><label class="f" for="in-m2m-secret-${s}">IAC_LOGTO_INFRA_M2M_SECRET</label><input type="password" id="in-m2m-secret-${s}" autocomplete="off"/></div>
+          </div>
+          <button data-act="oobe" data-stack="${env.stack}">Apply sign-in setup</button>
+          <label class="f" for="in-gt-${s}">IAC_GLITCHTIP_API_TOKEN (family-wide, from <a href="http://localhost:8383" target="_blank" rel="noreferrer">GlitchTip</a> → Auth Tokens)</label>
+          <input type="password" id="in-gt-${s}" autocomplete="off"/>
+          <button data-act="gtapply" data-stack="${env.stack}">Apply crash tracking</button>
+          <div class="msg" id="msg-oobe-${s}"></div>
+        </details>
+      </div>
+    </div>
+  </div>`;
+}
+
+/** re-render the env cards ONLY when the environment LIST changes —
+ * typed values survive every ordinary refresh */
+function renderEnvCards(st) {
+  const list = Object.entries(st.stacks)
+    .filter(([, s]) => s.envName)
+    .map(([stackName, s]) => ({ stack: stackName, name: s.envName, channel: s.channel, web: s.urls.web, logtoAdmin: s.urls.logtoAdmin }));
+  S.envList = list;
+  const signature = JSON.stringify(list);
+  const box = document.getElementById('env-cards');
+  if (box && box.dataset.signature !== signature) {
+    box.dataset.signature = signature;
+    box.innerHTML = list.map(envCardHtml).join('');
+    applyIcons(box);
+    // the native build target follows the env list
+    const sel = document.getElementById('native-env-select');
+    if (sel) {
+      const cur = sel.value;
+      sel.innerHTML = list.map((e) => `<option value="${e.stack}">${envLabel(e.name)}</option>`).join('');
+      if (list.some((e) => e.stack === cur)) sel.value = cur;
+    }
+  }
+}
+
+async function refreshLocal() {
+  if (!HELPER) return;
+  const box = document.getElementById('local-status');
+  try {
+    const res = await hfetch('/api/local/status');
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    const st = await res.json();
+    // the union of every stack's stored names drives the step-3 saved dots
+    S.localStore = new Set(Object.values(st.stacks).flatMap((s) => s.stored));
+    const dot = (up) => `<span class="dot ${up ? 'ok' : 'miss'}"></span>`;
+    const link = (label, up, url) => `${dot(up)} <a href="${url}" target="_blank" rel="noreferrer">${label}</a>`;
+    const rows = [`${dot(st.docker.ok)} Docker ${st.docker.ok ? st.docker.version : '<b>not running — start Docker Desktop</b>'}`];
+    for (const [name, s] of Object.entries(st.stacks)) {
+      const parts = [`<b>${labelOf(name)}</b>`, `${dot(s.rendered)} ${s.rendered ? 'set up' : 'not set up yet'}`];
+      if (s.urls.web) {
+        parts.push(link('app', s.services.web, s.urls.web), link('admin', s.services.web, s.urls.admin),
+          link('api', s.services.api, `${s.urls.api}/health`), link('logto', s.services.logto, s.urls.logtoAdmin));
+      }
+      if (s.urls.glitchtip) {
+        parts.push(link('glitchtip', s.services.glitchtip, s.urls.glitchtip), link('vault', s.services.vault, s.urls.vault),
+          link('control', s.services.control, s.urls.control), link('pgadmin', s.services.pgadmin, s.urls.pgadmin));
+      }
+      rows.push(parts.join(' &nbsp;·&nbsp; '));
+    }
+    box.innerHTML = rows.map((r) => `<div style="margin:2px 0">${r}</div>`).join('');
+    renderEnvCards(st);
+    const shared = st.stacks[SHARED_STACK];
+    document.getElementById('local-links').innerHTML = ['Once up:',
+      ...S.envList.map((e) => `<a class="chiplink" href="${e.web}" target="_blank" rel="noreferrer"><b>${envLabel(e.name)}</b> ${e.web.replace('http://', '')}</a>`),
+      `<a class="chiplink" href="${shared.urls.control}" target="_blank" rel="noreferrer"><b>control</b> ${shared.urls.control.replace('http://', '')}</a>`,
+    ].join(' ');
+    for (const env of S.envList) updateEnvCard(env, st.stacks[env.stack]);
+    const sharedUp = shared.services.glitchtip && shared.services.vault;
+    setPill('local-shared-pill', sharedUp ? 'running ✓' : (shared.rendered ? 'set up — not running' : 'not set up yet'), sharedUp);
+    const prod = st.stacks['munni-local-prod'];
+    const up = Boolean(prod?.services.web && prod?.services.api);
+    setPill('local-pill', up ? 'running ✓' : (prod?.rendered ? 'set up — not running' : 'not set up yet'), up);
+    setPill('lan-pill', st.lan ? `https on — ${st.lan}` : 'localhost mode', Boolean(st.lan));
+    // the CA download links print the REAL dashed hostname (a dotted
+    // guess dead-ends in an SSL error — user report 2026-08-31)
+    if (st.lan) {
+      const caUrl = `http://ca.${st.lan.replaceAll('.', '-')}.sslip.io`;
+      document.querySelectorAll('[data-ca-url]').forEach((a) => { a.href = caUrl; a.querySelector('code').textContent = caUrl; });
+    }
+    // master buttons follow the FAMILY state (user ruling 2026-08-28):
+    // no Delete/Stop before anything exists; Set up only when it would
+    // actually do something
+    const anyRendered = Object.values(st.stacks).some((s) => s.rendered);
+    const anyRunning = Object.values(st.stacks).some((s) => Object.values(s.services).some(Boolean));
+    if (!S.masterBusy) {
+      const allUp = sharedUp && S.envList.length > 0 && S.envList.every((e) => {
+        const s2 = st.stacks[e.stack];
+        return s2?.services.web && s2?.services.api && s2?.services.logto;
+      });
+      const setupBtn = document.getElementById('btn-local-setup');
+      if (!setupBtn.dataset.busy) setupBtn.disabled = allUp;
+      setupBtn.title = allUp ? 'everything is already up — use the environment cards for individual actions' : '';
+      document.getElementById('btn-local-stopall').hidden = !anyRunning;
+      document.getElementById('btn-local-verify').hidden = !anyRendered;
+      document.getElementById('btn-trust-ca').hidden = !st.lan;
+      document.getElementById('btn-local-nuke-all').hidden = !anyRendered;
+    }
+    // the mode is automatic: reconcile ONCE per page load, and only for
+    // a set-up family (a first-time visitor must not trigger restarts)
+    if (!S.lanReconciled && S.platform === 'local' && anyRendered) {
+      S.lanReconciled = true;
+      reconcileLanMode().catch(() => {});
+    }
+    renderStatus();
+  } catch (e) {
+    box.textContent = `helper unreachable (${e.message}) — restart infra/setup/start.cmd and reload`;
+  }
+}
+
+const localLog = (text) => {
+  const log = document.getElementById('local-log');
+  log.textContent = (log.textContent + text).slice(-200000);
+  log.scrollTop = log.scrollHeight;
+};
+
+/** quiet run: store-style operations shouldn't flood the output box —
+ * the response is read whole and only failures land in the log */
+async function runLocalQuiet(body) {
+  const res = await hfetch('/api/local/run', { method: 'POST', body: JSON.stringify(body) });
+  const text = await res.text();
+  const ok = res.ok && /\[exit 0\]/.test(text.slice(-40));
+  if (!ok) localLog(`\n${text}\n`);
+  return ok;
+}
+
+/** poll /status until the named services of ONE stack answer */
+async function waitForServices(stackName, need, label, timeoutMs = 300000) {
+  const started = Date.now();
+  localLog(`\n▶ ${label}\n`);
+  for (;;) {
+    let st = null;
+    try { st = await (await hfetch('/api/local/status')).json(); } catch { /* helper hiccup — keep polling */ }
+    const missing = st ? need.filter((k) => !st.stacks[stackName].services[k]) : need;
+    if (!missing.length) { localLog(`✓ ${label}\n`); return st; }
+    if (Date.now() - started > timeoutMs) {
+      localLog(`✗ ${label}: still waiting on ${missing.join(', ')} — check the output above / docker ps, then press Set up again (it resumes where it left off).\n`);
+      return null;
+    }
+    localLog(`… ${missing.join(', ')} not up yet (${Math.round((Date.now() - started) / 1000)}s — first image pulls and seeds take a while)\n`);
+    await new Promise((r) => setTimeout(r, 8000));
+  }
+}
+
+async function streamLocal(path, body, label) {
+  if (!HELPER) return false;
+  if (localBusy) { localLog(`\n(busy — wait for the current step to finish)\n`); return false; }
+  localBusy = true;
+  localLog(`\n▶ ${label}\n`);
+  try {
+    const res = await hfetch(path, { method: 'POST', body: JSON.stringify(body) });
+    if (!res.ok || !res.body) { localLog(`helper error ${res.status}: ${await res.text()}\n`); return false; }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let tail = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = dec.decode(value, { stream: true });
+      tail = (tail + chunk).slice(-40);
+      localLog(chunk);
+    }
+    const ok = /\[exit 0\]/.test(tail);
+    localLog(ok ? `✓ ${label} done\n` : `✗ ${label} failed — read the output above\n`);
+    return ok;
+  } catch (e) {
+    localLog(`✗ ${label}: ${e.message}\n`);
+    return false;
+  } finally {
+    localBusy = false;
+    await refreshLocal();
+  }
+}
+
+/* ── ui plumbing ── */
+const msg = (id, text, ok) => {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'msg ' + (ok ? 'ok' : 'bad');
+};
+
+function groupVisible(g) {
+  if (!(g.targets ?? ['nas', 'local']).includes(S.platform)) return false;
+  if (g.feature && !S.features[g.feature]) return false;
+  return true;
+}
+
+function applyPlatform() {
+  document.querySelectorAll('[data-platform]').forEach((el) => {
+    el.classList.toggle('hide', el.dataset.platform !== S.platform);
+  });
+  document.querySelectorAll('[data-platform-pick]').forEach((el) => {
+    el.classList.toggle('sel', el.dataset.platformPick === S.platform);
+  });
+  // GitHub is optional for the local track — fold the connect section away
+  document.getElementById('creds-sub').textContent = S.platform === 'local'
+    ? 'Each card explains what the service is, why munni needs it and exactly where the values come from. Paste, hit Save — with the local helper running, they land in a gitignored secret store on THIS machine (GitHub is not involved for the local twin) and step 4 uses them.'
+    : "Each card explains what the service is, why munni needs it and exactly where the values come from. Paste, hit Store — this page encrypts them client-side (GitHub's sealed-box contract) and writes repository or environment secrets directly. Values are write-only from then on; the dots show presence, never content.";
+  renderFeatures();
+  renderCards();
+  renderNative();
+  if (S.platform === 'local') refreshLocal();
+}
+
+/** the native section follows the android/ios FEATURE toggles and the
+ * platform: CI-dispatch track under nas, LAN-mode track under local */
+function renderNative() {
+  const nativeOn = Boolean(S.features.android || S.features.ios);
+  document.getElementById('s-native').classList.toggle('hide', !nativeOn);
+  document.querySelectorAll('[data-native-track]').forEach((el) => {
+    el.classList.toggle('hide', el.dataset.nativeTrack !== S.platform);
+  });
+  document.querySelectorAll('[data-needs-feature]').forEach((el) => {
+    el.classList.toggle('hide', !S.features[el.dataset.needsFeature]);
+  });
+  setPill('native-pill', S.platform === 'local' ? 'CI builds, your phone installs' : 'store-mandated manual firsts', false);
+  updateNativeAppIdLabels();
+  // the GitHub card follows the same inputs: the NAS track always needs
+  // it; the local track only when a CI-built feature (Android/iOS) is on
+  const needGithub = S.platform === 'nas' || nativeOn;
+  document.getElementById('connect-card').classList.toggle('hide', !needGithub);
+  document.getElementById('connect-why-nas').hidden = S.platform !== 'nas';
+  document.getElementById('connect-why-local').hidden = S.platform !== 'local';
+}
+
+function applyDomain() {
+  const d = S.domain || '<domain>';
+  document.querySelectorAll('.dom-link').forEach((a) => {
+    a.textContent = `${a.dataset.host}.${d}`;
+    if (S.domain) { a.href = `https://${a.dataset.host}.${S.domain}`; a.target = '_blank'; a.rel = 'noreferrer'; }
+    else a.removeAttribute('href');
+  });
+  // .dom / .dom-inline carry a literal <domain> token in their markup
+  // (arrives decoded in textContent); capture the template once, then
+  // re-render from it whenever the domain field changes
+  document.querySelectorAll('.dom, .dom-inline').forEach((el) => {
+    if (!el.dataset.tpl) el.dataset.tpl = el.textContent;
+    el.textContent = el.dataset.tpl.replaceAll('<domain>', d);
+  });
+}
+
+function renderFeatures() {
+  document.getElementById('features').innerHTML = FEATURES.map((f) => {
+    const off = !(f.targets ?? ['nas', 'local']).includes(S.platform);
+    const hint = off ? f.offHint : ((S.platform === 'local' && f.localHint) || f.hint);
+    return `
+    <div class="feature" ${off ? 'style="opacity:.5"' : ''}><input type="checkbox" id="feat-${f.id}" ${S.features[f.id] && !off ? 'checked' : ''} ${off ? 'disabled' : ''}/>
+    <label for="feat-${f.id}"><b>${f.label}</b> — <span class="sub" style="display:inline">${hint}</span></label></div>`;
+  }).join('');
+  FEATURES.forEach((f) => {
+    document.getElementById('feat-' + f.id).addEventListener('change', async (e) => {
+      S.features[f.id] = e.target.checked; LS.set('features', S.features); renderCards(); renderNative(); renderStatus();
+      // the toggle IS the trigger (user ruling): the network mode follows
+      // the features by itself — LAN when a phone/https feature is on,
+      // plain localhost when none is — and android/ios ON starts the CI
+      // build without another click
+      if (S.platform === 'local' && HELPER) await reconcileLanMode().catch(() => {});
+      if (e.target.checked && (f.id === 'android' || f.id === 'ios')) autoNativeFlow(f.id).catch(() => {});
+    });
+  });
+}
+
+function renderCards() {
+  const local = S.platform === 'local';
+  const scopeTag = (f) => {
+    if (local) return 'local secret store (this machine)';
+    return f.scope === 'repo' ? 'repository secret' : 'both iac environments';
+  };
+  // how-steps may differ per platform (redirect URLs above all): plain
+  // strings apply everywhere, {nas, local} objects resolve here
+  const howSteps = (g) => g.how.map((h) => (typeof h === 'string' ? h : h[S.platform])).filter(Boolean);
+  const wrap = document.getElementById('cred-cards');
+  // re-rendering (feature toggles, platform switch) must never eat what
+  // the user already typed: snapshot values + open explainers, restore after
+  const typed = Object.fromEntries(
+    [...wrap.querySelectorAll('[data-secret]')].map((el) => [el.dataset.secret, el.value]).filter(([, v]) => v),
+  );
+  const openHow = new Set(
+    [...wrap.querySelectorAll('.card')].filter((c) => c.querySelector('details.how')?.open).map((c) => c.dataset.group),
+  );
+  wrap.innerHTML = GROUPS.filter(groupVisible).map((g) => `
+    <div class="card" data-group="${g.id}">
+      <h3>${g.title} ${g.fields.map((f) => `<span class="dot" data-dot="${f.name}" data-carddot="1" ${f.optional ? 'data-opt="1"' : ''}></span>`).join('')}</h3>
+      <p class="why">${g.why}</p>
+      <details class="how"><summary>Where these values come from</summary><ol>${howSteps(g).map((h) => `<li>${h}</li>`).join('')}</ol></details>
+      ${g.fields.map((f) => `
+        <label class="f" for="field-${f.name}">${f.name} <span class="envtag">${scopeTag(f)}</span></label>
+        ${f.area ? `<textarea id="field-${f.name}" data-secret="${f.name}" data-scope="${f.scope}" ${f.mirror ? `data-mirror="${f.mirror}"` : ''}></textarea>`
+                 : `<input id="field-${f.name}" type="${f.secret ? 'password' : 'text'}" data-secret="${f.name}" data-scope="${f.scope}" placeholder="${f.ph ?? ''}" ${f.mirror ? `data-mirror="${f.mirror}"` : ''} autocomplete="off"/>`}`).join('')}
+      <button data-store-group="${g.id}">${local ? 'Save' : 'Store'}</button>${g.check ? `
+      <button class="ghost" data-check-group="${g.id}">Check</button>` : ''}
+      <div class="msg" id="msg-group-${g.id}"></div>
+    </div>`).join('');
+  wrap.querySelectorAll('[data-store-group]').forEach((btn) => btn.addEventListener('click', () => storeGroup(btn.dataset.storeGroup)));
+  wrap.querySelectorAll('[data-check-group]').forEach((btn) => btn.addEventListener('click', () => checkGroup(btn.dataset.checkGroup)));
+  // any edit resets a pending "Store anyway" back to the validating Store
+  wrap.querySelectorAll('.card').forEach((card) => card.addEventListener('input', () => {
+    const store = card.querySelector('[data-store-group]');
+    if (store?.dataset.force) { delete store.dataset.force; store.textContent = S.platform === 'local' ? 'Save' : 'Store'; }
+  }));
+  wrap.querySelectorAll('[data-secret]').forEach((el) => { if (!el.value && typed[el.dataset.secret]) el.value = typed[el.dataset.secret]; });
+  wrap.querySelectorAll('.card').forEach((card) => { if (openHow.has(card.dataset.group)) { const d = card.querySelector('details.how'); if (d) d.open = true; } });
+  wrap.querySelectorAll('[data-mirror="domain"]').forEach((input) => {
+    if (!input.value && S.domain) input.value = S.domain;
+    input.addEventListener('input', () => { S.domain = input.value.trim(); LS.set('domain', S.domain); applyDomain(); });
+  });
+  applyDomain();
+  renderStatus();
+}
+
+async function storeGroup(id) {
+  const g = GROUPS.find((x) => x.id === id);
+  const card = document.querySelector(`[data-group="${id}"]`);
+  const storeBtn = card.querySelector('[data-store-group]');
+  const entries = [...card.querySelectorAll('[data-secret]')]
+    .map((el) => ({ name: el.dataset.secret, scope: el.dataset.scope, value: normalizeSecret(el.dataset.secret, el.value.trim()) }))
+    .filter((e) => e.value);
+  if (!entries.length) { msg('msg-group-' + id, 'Nothing to store — every field is empty.', false); return; }
+
+  // validate first (like the GitHub connect step). A definitive rejection
+  // blocks the store — Store turns into "Store anyway" for an override; a
+  // provider we couldn't reach only warns.
+  let verdictNote = '';
+  if (g.check && !storeBtn.dataset.force) {
+    msg('msg-group-' + id, 'checking the values first…', true);
+    try {
+      const verdict = await checkCredentials(g.check, cardValues(card));
+      if (verdict && !verdict.ok && !verdict.unreachable && !verdict.noHelper) {
+        msg('msg-group-' + id, `✗ not stored — ${verdict.detail}`, false);
+        storeBtn.dataset.force = '1';
+        storeBtn.textContent = 'Store anyway';
+        return;
+      }
+      verdictNote = verdict?.ok ? ` — checked ✓ (${verdict.detail})` : (verdict ? ` — could not verify: ${verdict.detail}` : '');
+    } catch { verdictNote = ' — could not verify (check failed)'; }
+  }
+  delete storeBtn.dataset.force;
+  storeBtn.textContent = S.platform === 'local' ? 'Save' : 'Store';
+
+  if (S.platform === 'local') {
+    if (!HELPER) { msg('msg-group-' + id, 'Start the local helper first (double-click infra\\setup\\start.cmd) — then this page can save values on this machine.', false); return; }
+    msg('msg-group-' + id, 'saving…', true);
+    const values = Object.fromEntries(entries.map((e) => [e.name, e.value]));
+    const ok = await runLocalQuiet({ values });
+    if (ok) {
+      card.querySelectorAll('[data-secret]').forEach((el) => { if (!el.dataset.mirror) el.value = ''; });
+      msg('msg-group-' + id, `Saved ✓ — kept in this machine's gitignored store; step 4 uses it (running containers pick it up on the next Set up)${verdictNote}`, true);
+      await refreshLocal();
+    } else {
+      msg('msg-group-' + id, 'Saving failed — details in the step-4 output box.', false);
+    }
+    return;
+  }
+
+  try {
+    requireConnection();
+    for (const e of entries) await storeSecret(e.name, e.value, e.scope);
+    card.querySelectorAll('[data-secret]').forEach((el) => { if (!el.dataset.mirror) el.value = ''; });
+    msg('msg-group-' + id, `Stored ${entries.map((e) => e.name).join(', ')} ✓ (values are write-only from here on)${verdictNote}`, true);
+    await refresh();
+  } catch (e) { msg('msg-group-' + id, String(e.message || e), false); }
+}
+
+function requireConnection() {
+  if (!S.pat || !S.user) throw new Error('Connect first (step 0) — paste the PAT and hit Connect.');
+}
+
+/* ── credential validation (user request: "check if the pat is correct,
+   like GitHub"). GitHub-token checks run right here in the page; most
+   other providers block cross-origin calls, so their checks run through
+   the local helper, which mirrors the server's real auth flows. ── */
+const BROWSER_VALIDATORS = {
+  async ghcr(values) {
+    const pat = values.NAS_GHCR_PAT;
+    if (!pat) return { ok: false, detail: 'paste the token first' };
+    const res = await fetch('https://api.github.com/user', { headers: { authorization: 'Bearer ' + pat } });
+    if (!res.ok) return { ok: false, detail: `GitHub rejected the token (${res.status})` };
+    const scopes = res.headers.get('x-oauth-scopes') ?? '';
+    const login = (await res.json()).login;
+    if (!/(read|write):packages/.test(scopes)) {
+      return { ok: false, detail: `the token authenticates as ${login} but lacks read:packages (scopes: ${scopes || 'none — is it fine-grained? use classic here'})` };
+    }
+    return { ok: true, detail: `valid — ${login}, scopes: ${scopes}` };
+  },
+  async domain(values) {
+    const d = values.IAC_DOMAIN ?? '';
+    return /^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(d)
+      ? { ok: true, detail: 'looks like a valid hostname (DNS itself is probed by bootstrap --verify)' }
+      : { ok: false, detail: 'not a hostname — expected something like yourname.synology.me (no https://, no trailing slash)' };
+  },
+  async emailUrl(values) {
+    const u = values.NAS_GLITCHTIP_EMAIL_URL ?? '';
+    return /^smtps?:\/\/[^:@\s]+(:[^@\s]*)?@[^:@\s]+:\d+\/?$/.test(u)
+      ? { ok: true, detail: 'well-formed smtp url (delivery itself is proven by the first GlitchTip mail)' }
+      : { ok: false, detail: 'expected smtp://USER:PASSWORD@HOST:PORT (or smtps://)' };
+  },
+};
+
+/** run a group's validator with the values at hand; null = cannot check here */
+async function checkCredentials(check, values) {
+  if (!check) return null;
+  if (check.startsWith('browser:')) return BROWSER_VALIDATORS[check.slice(8)](values);
+  if (!HELPER) return { ok: false, noHelper: true, detail: 'this provider blocks browser calls — start the local helper (infra\\setup\\start.cmd) and this page can check it for real; the value is verified on first use either way' };
+  const res = await hfetch('/api/validate', { method: 'POST', body: JSON.stringify({ provider: check, values }) });
+  if (!res.ok) return { ok: false, unreachable: true, detail: `helper error ${res.status}` };
+  return res.json();
+}
+
+/* accept what humans naturally paste; convert to the stored contract
+ * here (user request 2026-08-30: no by-hand base64 commands) */
+const FIELD_NORMALIZERS = {
+  // the .p8 is STORED base64 (CI decodes it) — accept the raw PEM as
+  // pasted straight from the downloaded AuthKey file
+  ASC_KEY_P8: (v) => (v.includes('BEGIN') ? btoa(v.replace(/\r\n/g, '\n') + '\n') : v),
+};
+const normalizeSecret = (name, value) => (FIELD_NORMALIZERS[name] ? FIELD_NORMALIZERS[name](value) : value);
+const cardValues = (card) =>
+  Object.fromEntries([...card.querySelectorAll('[data-secret]')].map((el) => [el.dataset.secret, normalizeSecret(el.dataset.secret, el.value.trim())]).filter(([, v]) => v));
+
+async function checkGroup(id) {
+  const g = GROUPS.find((x) => x.id === id);
+  const card = document.querySelector(`[data-group="${id}"]`);
+  const btn = card.querySelector('[data-check-group]');
+  btn.disabled = true;
+  msg('msg-group-' + id, 'checking…', true);
+  try {
+    const verdict = await checkCredentials(g.check, cardValues(card));
+    msg('msg-group-' + id, `${verdict.ok ? '✓' : '✗'} ${verdict.detail}`, verdict.ok);
+  } catch (e) {
+    msg('msg-group-' + id, `✗ check failed: ${e.message}`, false);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ── manifest drift check: the wizard must cover every operator secret ── */
+async function checkManifest() {
+  try {
+    const file = await gh(`/repos/${S.slug}/contents/infra/secrets.manifest.json?ref=${encodeURIComponent(S.ref)}`, { allow404: true });
+    if (!file?.content) return;
+    const manifest = JSON.parse(atob(file.content.replace(/\n/g, '')));
+    const known = new Set([
+      ...GROUPS.flatMap((g) => g.fields.map((f) => f.name)),
+      'IAC_GH_PAT', 'IAC_LOGTO_INFRA_M2M_ID', 'IAC_LOGTO_INFRA_M2M_SECRET', 'IAC_GLITCHTIP_API_TOKEN', 'NAS_ADMIN_SUBS',
+    ]);
+    const uncovered = manifest.secrets.filter((s) => s.owner === 'operator' && !known.has(s.name)).map((s) => s.name);
+    msg('msg-manifest', uncovered.length
+      ? `⚠ infra/secrets.manifest.json lists operator secrets this wizard has no card for yet: ${uncovered.join(', ')} — store those with gh secret set.`
+      : `Cross-checked against infra/secrets.manifest.json (${S.ref}): every operator secret has a card here ✓`, !uncovered.length);
+  } catch { /* status check only — never block on it */ }
+}
+
+/* ── wire up ── */
+const UPSTREAM = 'okkes/munnimok';
+document.getElementById('in-slug').value = S.slug;
+document.getElementById('in-slug').addEventListener('input', (e) => { S.slug = e.target.value.trim(); LS.set('slug', S.slug); document.getElementById('btn-fork').hidden = true; });
+
+async function connectRepo(repo) {
+  const pill = document.getElementById('connect-pill');
+  // branches are munni's own: dev when it exists, else the default branch
+  const dev = await gh(`/repos/${S.slug}/branches/dev`, { allow404: true });
+  S.ref = dev ? 'dev' : repo.default_branch;
+  LS.set('ref', S.ref);
+  const ci = await gh(`/repos/${S.slug}/contents/.github/workflows/iac.yml?ref=${encodeURIComponent(S.ref)}`, { allow404: true });
+  if (!ci) {
+    S.user = null;
+    pill.textContent = 'repo has no munni pipeline';
+    pill.className = 'pill bad';
+    msg('msg-connect', `${repo.full_name} exists but does not carry munni (.github/workflows/iac.yml missing on ${S.ref}). Point at a repo that does — or type a NEW repo name and Connect again, and this page forks ${UPSTREAM} under it for you (a fork cannot land on an existing repo).`, false);
+    return;
+  }
+  pill.textContent = `connected as ${S.user.login} ✓`;
+  pill.className = 'pill ok';
+  // open the first-boot latch: a connected repo is being initialized —
+  // its push workflows (skipped until now on fresh copies) come alive
+  await ghUpsertRepoVar('MUNNI_INITIALIZED', 'true').catch(() => {});
+  document.getElementById('btn-store-pat').disabled = false;
+  document.getElementById('btn-refresh').disabled = false;
+  msg('msg-connect', `Repo ${repo.full_name} ready (branch ${S.ref}). Loading live status…`, true);
+  await refresh();
+  await checkManifest();
+  msg('msg-connect', `Repo ${repo.full_name} ready (branch ${S.ref}). Live status loaded — dots and pills below reflect reality.`, true);
+  // a native toggle that waited on this connection fires now
+  if (S.pendingNativeBuild) {
+    const kind = S.pendingNativeBuild;
+    S.pendingNativeBuild = null;
+    autoNativeFlow(kind).catch(() => {});
+  }
+}
+
+document.getElementById('btn-connect').addEventListener('click', async () => {
+  S.pat = document.getElementById('in-pat').value.trim();
+  const pill = document.getElementById('connect-pill');
+  document.getElementById('btn-fork').hidden = true;
+  try {
+    if (!S.pat) throw new Error('Paste the PAT first.');
+    if (!/^[^/\s]+\/[^/\s]+$/.test(S.slug)) throw new Error('The repository must be owner/name.');
+    S.user = await gh('/user');
+    const repo = await gh(`/repos/${S.slug}`, { allow404: true });
+    if (!repo) {
+      pill.textContent = 'repo does not exist yet';
+      pill.className = 'pill warn';
+      document.getElementById('btn-fork').hidden = false;
+      msg('msg-connect', `${S.slug} does not exist. I can create it as YOUR copy of ${UPSTREAM} — all branches included (a fork when the owner differs, a template copy inside the same account). The PAT must cover All repositories for this (see the token how-to).`, false);
+      return;
+    }
+    await connectRepo(repo);
+  } catch (e) {
+    S.user = null;
+    pill.textContent = 'not connected';
+    pill.className = 'pill bad';
+    msg('msg-connect', String(e.message || e), false);
+  }
+});
+
+document.getElementById('btn-fork').addEventListener('click', async () => {
+  const pill = document.getElementById('connect-pill');
+  // a mid-copy click on any of these reads as interrupting the copy —
+  // hold the whole card until the flow settles (user report 2026-08-30)
+  for (const id of ['btn-fork', 'btn-connect', 'btn-store-pat', 'btn-refresh']) {
+    document.getElementById(id).disabled = true;
+  }
+  try {
+    if (!S.user) throw new Error('Connect first so I know who you are.');
+    const [owner, name] = S.slug.split('/');
+    const [upOwner] = UPSTREAM.split('/');
+    if (owner.toLowerCase() === upOwner.toLowerCase()) {
+      // GitHub cannot fork a repository into its OWN account — copy it
+      // through the template API instead (found live 2026-08-28: the
+      // fork request was accepted but nothing ever appeared)
+      await gh(`/repos/${UPSTREAM}`, { method: 'PATCH', body: JSON.stringify({ is_template: true }) });
+      await gh(`/repos/${UPSTREAM}/generate`, { method: 'POST', body: JSON.stringify({ owner, name, include_all_branches: true, description: 'munni (copied from the setup wizard)' }) });
+      // NEVER pause Actions during the copy (tried 2026-08-30: the
+      // workflows were permanently left out of the Actions index — no
+      // dispatches, no runs). The initial commits fire a wave of runs
+      // into a secretless repo; those failures are cosmetic.
+      msg('msg-connect', 'Copy requested (template generate — a fork cannot land in the same account) — this usually takes a few seconds…', true);
+    } else {
+      const body = { name, default_branch_only: false, organization: owner };
+      await gh(`/repos/${UPSTREAM}/forks`, { method: 'POST', body: JSON.stringify(body) });
+      msg('msg-connect', 'Fork requested — GitHub copies the repository in the background, this usually takes a few seconds…', true);
+    }
+    pill.textContent = 'copying…';
+    pill.className = 'pill warn';
+    let repo = null;
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      repo = await gh(`/repos/${S.slug}`, { allow404: true });
+      if (repo && (await gh(`/repos/${S.slug}/contents/.github/workflows/iac.yml?ref=${encodeURIComponent(repo.default_branch)}`, { allow404: true }))) break;
+    }
+    if (!repo) throw new Error('the copy never appeared — check the PAT covers All repositories (Administration + Contents), then retry.');
+    // workflows arrive disabled on forks — enable them so the buttons work
+    await gh(`/repos/${S.slug}/actions/permissions`, { method: 'PUT', body: JSON.stringify({ enabled: true, allowed_actions: 'all' }) })
+      .catch(() => msg('msg-connect', 'Fork ready, but Actions could not be enabled via the API — flip it on under the repo Settings → Actions.', false));
+    // the ACTIONS INDEX registers the workflows a beat after the files
+    // land — dispatching before that 404s, so hold here until it fills.
+    // If it stays empty, a disable→enable cycle resets the repo's
+    // Actions event pipeline (proven live 2026-08-30: pushes fired no
+    // runs and the index flapped until the toggle).
+    msg('msg-connect', 'Copy stands — waiting for GitHub to register its workflows…', true);
+    let indexed = 0;
+    for (let i = 0; i < 30; i++) {
+      const wfs = await gh(`/repos/${S.slug}/actions/workflows?per_page=1`, { allow404: true });
+      indexed = wfs?.total_count ?? 0;
+      if (indexed > 0) break;
+      if (i === 10) {
+        msg('msg-connect', 'Still no workflows registered — resetting the repo’s Actions pipeline (off/on) and retrying…', true);
+        await gh(`/repos/${S.slug}/actions/permissions`, { method: 'PUT', body: JSON.stringify({ enabled: false }) }).catch(() => {});
+        await new Promise((r) => setTimeout(r, 2000));
+        await gh(`/repos/${S.slug}/actions/permissions`, { method: 'PUT', body: JSON.stringify({ enabled: true, allowed_actions: 'all' }) }).catch(() => {});
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    if (!indexed) msg('msg-connect', 'GitHub has not registered the workflows yet — builds will 404 until it does. A tiny push to the repo (any commit) forces it; then press Refresh status.', false);
+    document.getElementById('btn-fork').hidden = true;
+    await connectRepo(repo);
+  } catch (e) {
+    pill.textContent = 'fork failed';
+    pill.className = 'pill bad';
+    msg('msg-connect', String(e.message || e), false);
+  } finally {
+    for (const id of ['btn-fork', 'btn-connect', 'btn-store-pat', 'btn-refresh']) {
+      document.getElementById(id).disabled = false;
+    }
+    document.getElementById('btn-store-pat').disabled = !S.user;
+    document.getElementById('btn-refresh').disabled = !S.user;
+  }
+});
+document.getElementById('btn-store-pat').addEventListener('click', async () => {
+  try {
+    requireConnection();
+    await storeSecret('IAC_GH_PAT', S.pat, 'repo');
+    msg('msg-connect', 'PAT stored as IAC_GH_PAT ✓ — the bootstrap workflow can now manage environments and secrets.', true);
+    await refresh();
+  } catch (e) { msg('msg-connect', String(e.message || e), false); }
+});
+document.getElementById('btn-refresh').addEventListener('click', () => refresh().then(checkManifest).catch((e) => msg('msg-connect', String(e.message || e), false)));
+
+document.querySelectorAll('[data-platform-pick]').forEach((el) => el.addEventListener('click', () => {
+  S.platform = el.dataset.platformPick;
+  LS.set('platform', S.platform);
+  applyPlatform();
+}));
+
+document.querySelectorAll('[data-dispatch-iac]').forEach((btn) => btn.addEventListener('click', async () => {
+  try {
+    requireConnection();
+    await dispatch('iac.yml', { stack: btn.dataset.dispatchIac });
+    msg('msg-iac', `Bootstrap dispatched for ${btn.dataset.dispatchIac} — status appears below in a few seconds. The run's summary and its runbook artifact carry every remaining manual step, personalized.`, true);
+    setTimeout(() => refresh().catch(() => {}), 3000);
+  } catch (e) { msg('msg-iac', String(e.message || e), false); }
+}));
+document.querySelectorAll('[data-dispatch-iac-verify]').forEach((btn) => btn.addEventListener('click', async () => {
+  try {
+    requireConnection();
+    await dispatch('iac.yml', { stack: btn.dataset.dispatchIacVerify, verify_only: 'true' });
+    msg('msg-iac', `Verify dispatched for ${btn.dataset.dispatchIacVerify} — probes land in the run summary.`, true);
+    setTimeout(() => refresh().catch(() => {}), 3000);
+  } catch (e) { msg('msg-iac', String(e.message || e), false); }
+}));
+document.querySelectorAll('[data-dispatch-nas]').forEach((btn) => btn.addEventListener('click', async () => {
+  try {
+    requireConnection();
+    await dispatch('deploy-nas.yml', { channel: btn.dataset.dispatchNas });
+    msg('msg-nas', `Deploy dispatched (channel ${btn.dataset.dispatchNas}). After the run goes green, the NAS poller applies it within ~5 minutes.`, true);
+    setTimeout(() => refresh().catch(() => {}), 3000);
+  } catch (e) { msg('msg-nas', String(e.message || e), false); }
+}));
+document.querySelectorAll('[data-dispatch-native]').forEach((btn) => btn.addEventListener('click', async () => {
+  const [file, environment] = btn.dataset.dispatchNative.split(':');
+  try {
+    requireConnection();
+    await dispatch(file, { environment });
+    msg('msg-native', `${file} dispatched against ${environment}.`, true);
+    setTimeout(() => refresh().catch(() => {}), 3000);
+  } catch (e) { msg('msg-native', String(e.message || e), false); }
+}));
+
+document.getElementById('btn-store-m2m').addEventListener('click', async () => {
+  try {
+    requireConnection();
+    const id = document.getElementById('in-m2m-id').value.trim();
+    const secret = document.getElementById('in-m2m-secret').value.trim();
+    if (!id || !secret) throw new Error('Both the app id and the secret are needed.');
+    await storeSecret('IAC_LOGTO_INFRA_M2M_ID', id, 'pair');
+    await storeSecret('IAC_LOGTO_INFRA_M2M_SECRET', secret, 'pair');
+    document.getElementById('in-m2m-secret').value = '';
+    msg('msg-logto', 'Credential stored in both iac environments ✓ — now re-run both bootstraps (buttons above) to turn Logto apps into code.', true);
+    await refresh();
+  } catch (e) { msg('msg-logto', String(e.message || e), false); }
+});
+document.getElementById('btn-store-gt').addEventListener('click', async () => {
+  try {
+    requireConnection();
+    const token = document.getElementById('in-gt-token').value.trim();
+    if (!token) throw new Error('Paste the token first.');
+    await storeSecret('IAC_GLITCHTIP_API_TOKEN', token, 'pair');
+    document.getElementById('in-gt-token').value = '';
+    msg('msg-gt', 'Token stored ✓ — re-run both bootstraps; the DSNs write themselves back.', true);
+    await refresh();
+  } catch (e) { msg('msg-gt', String(e.message || e), false); }
+});
+document.getElementById('btn-store-subs').addEventListener('click', async () => {
+  try {
+    requireConnection();
+    const subs = document.getElementById('in-admin-subs').value.trim();
+    if (!subs) throw new Error('Paste at least one user id.');
+    await storeSecret('NAS_ADMIN_SUBS', subs, 'pair');
+    msg('msg-subs', 'Stored in both environments ✓ — redeploy so the API picks it up.', true);
+    await refresh();
+  } catch (e) { msg('msg-subs', String(e.message || e), false); }
+});
+document.getElementById('btn-rotate').addEventListener('click', async () => {
+  try {
+    requireConnection();
+    const rotate = document.getElementById('in-rotate').value.trim();
+    if (!rotate) throw new Error('Name at least one generated secret.');
+    await dispatch('iac.yml', { stack: document.getElementById('in-rotate-stack').value, rotate });
+    msg('msg-rotate', `Rotation dispatched (${rotate}). Redeploy the stack afterwards so containers restart with the new value.`, true);
+  } catch (e) { msg('msg-rotate', String(e.message || e), false); }
+});
+
+document.querySelectorAll('pre button.copy').forEach((btn) => btn.addEventListener('click', async () => {
+  const code = btn.parentElement.querySelector('code')?.innerText ?? '';
+  try { await navigator.clipboard.writeText(code); btn.textContent = 'copied ✓'; }
+  catch { btn.textContent = 'select + copy manually'; }
+  setTimeout(() => { btn.textContent = 'copy'; }, 1600);
+}));
+
+/* local-track buttons (helper mode) */
+document.getElementById('local-nohelper').hidden = Boolean(HELPER);
+document.getElementById('local-helper-ui').hidden = !HELPER;
+document.getElementById('btn-local-refresh')?.addEventListener('click', () => refreshLocal());
+
+applyIcons();
+
+/** one environment, end to end: render → start → wait for ITS logto →
+ * wire sign-in + crash tracking. ALWAYS wires — the setups are
+ * idempotent and self-healing (a stored name must never gate this:
+ * after Delete + Set up the store still says "wired" while the fresh
+ * databases are empty — found live 2026-08-28). */
+async function setupEnv(env) {
+  const label = labelOf(env.stack);
+  if (!(await streamLocal('/api/local/run', { stack: env.stack }, `mint secrets + render ${label}`))) return false;
+  if (!(await streamLocal('/api/local/tool', { tool: `${env.stack}:up` }, `start ${label} (first run pulls images — can take a while)`))) return false;
+  const st = await waitForServices(env.stack, ['logto'], `wait for ${label}'s sign-in service`);
+  if (!st) return false;
+  if (!(await streamLocal('/api/local/logto-setup', { stack: env.stack }, `wire ${label} sign-in (automatic, self-healing)`))) return false;
+  if (!(await streamLocal('/api/local/glitchtip-setup', { stack: env.stack }, `wire ${label} crash tracking (automatic, self-healing)`))) return false;
+  return true;
+}
+
+/* the ONE local button: shared services first, then EVERY environment —
+   each wired automatically the moment its pieces answer. Idempotent. */
+document.getElementById('btn-local-setup')?.addEventListener('click', async () => {
+  const btn = document.getElementById('btn-local-setup');
+  btn.disabled = true;
+  btn.dataset.busy = '1'; // refreshLocal must not re-enable it mid-run
+  setMasterBusy(true);
+  try {
+    await refreshLocal();
+    // after Delete everything NO environment exists — production is
+    // recreated FIRST (user ruling 2026-08-28): the shared render
+    // references it as the control-owning environment
+    if (!S.envList.length) {
+      if (!(await streamLocal('/api/local/envs', { name: 'prod', channel: 'dev' }, 'create the production environment'))) return;
+      await refreshLocal();
+    }
+    if (!(await streamLocal('/api/local/run', { stack: SHARED_STACK }, 'mint secrets + render the shared services'))) return;
+    if (!(await streamLocal('/api/local/tool', { tool: `${SHARED_STACK}:up` }, 'start the shared services (glitchtip, vault, ocr, control, pgadmin)'))) return;
+    if (!(await waitForServices(SHARED_STACK, ['glitchtip', 'vault'], 'wait for the shared services'))) return;
+    // a phone/https feature turns the https mode (and its certificate,
+    // one Windows dialog) on as part of the setup — nothing separate
+    await reconcileLanMode().catch(() => {});
+    await refreshLocal();
+    // ALWAYS re-trust while https mode is on: Delete everything kills
+    // the CA volume, so a rebuilt family carries a NEW root — the flip
+    // alone would skip the install (found live 2026-08-30)
+    try {
+      const lanNow = await (await hfetch('/api/local/lan')).json();
+      if (lanNow.current) await streamLocal('/api/local/trust-ca', {}, 'trust the family certificate on this PC (new after a full delete — one Windows dialog)');
+    } catch { /* helper hiccup — the button on the card redoes it */ }
+    for (const env of S.envList) {
+      if (!(await setupEnv(env))) return;
+    }
+    if (!(await streamLocal('/api/local/vault-setup', {}, 'set up the vault (account + every secret imported + signups closed)'))) return;
+    const lines = S.envList.map((e) => `${envLabel(e.name)} → ${e.web}`).join('\n');
+    localLog(`\n══ munni is ready ══\n${lines}\ncontrol cockpit → http://localhost:8385 (sign in with the production admin)\nvault → https://localhost:8384 (login under Reveal secrets)\n`);
+  } finally {
+    delete btn.dataset.busy;
+    setMasterBusy(false);
+    btn.disabled = false;
+    await refreshLocal();
+  }
+});
+document.getElementById('btn-local-stopall')?.addEventListener('click', async () => {
+  setMasterBusy(true);
+  try {
+    for (const name of [...S.envList.map((e) => e.stack), SHARED_STACK]) {
+      await streamLocal('/api/local/tool', { tool: `${name}:down` }, `stop ${labelOf(name)}`);
+    }
+  } finally {
+    setMasterBusy(false);
+    await refreshLocal();
+  }
+});
+document.getElementById('btn-local-verify')?.addEventListener('click', async () => {
+  setMasterBusy(true);
+  try {
+    for (const name of [SHARED_STACK, ...S.envList.map((e) => e.stack)]) {
+      await streamLocal('/api/local/run', { stack: name, verify: true }, `verify ${labelOf(name)}`);
+    }
+  } finally {
+    setMasterBusy(false);
+    await refreshLocal();
+  }
+});
+
+/* add an environment: register + render on the helper, then the same
+   start-and-wire chain every environment gets */
+document.getElementById('btn-env-add')?.addEventListener('click', async () => {
+  const name = document.getElementById('env-add-name').value.trim().toLowerCase();
+  const channel = document.getElementById('env-add-channel').value;
+  const say = (t, ok = true) => msg('msg-env-add', t, ok);
+  if (!/^[a-z]{2,5}$/.test(name)) { say('2-5 lowercase letters (like test, acc, stg)', false); return; }
+  const btn = document.getElementById('btn-env-add');
+  btn.disabled = true;
+  try {
+    if (!(await streamLocal('/api/local/envs', { name, channel }, `register + render environment ${name}`))) { say('could not create it — see the output box', false); return; }
+    document.getElementById('env-add-name').value = '';
+    await refreshLocal(); // the new card appears
+    const env = S.envList.find((e) => e.name === name);
+    if (env && (await setupEnv(env))) say(`${envLabel(name)} is up and wired ✓`, true);
+  } finally {
+    btn.disabled = false;
+    await refreshLocal();
+  }
+});
+
+/* env-card actions: ONE delegated listener survives every re-render */
+document.getElementById('env-cards')?.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const stack = btn.dataset.stack;
+  const env = S.envList.find((x) => x.stack === stack);
+  if (!env) return;
+  const s = env.name;
+  const label = labelOf(stack);
+  const act = btn.dataset.act;
+  if (act === 'start') {
+    streamLocal('/api/local/tool', { tool: `${stack}:up` }, `start ${label}`);
+  } else if (act === 'stop') {
+    streamLocal('/api/local/tool', { tool: `${stack}:down` }, `stop ${label}`);
+  } else if (act === 'setup') {
+    btn.disabled = true;
+    try { await setupEnv(env); } finally { btn.disabled = false; await refreshLocal(); }
+  } else if (act === 'signin') {
+    streamLocal('/api/local/logto-setup', { stack }, `wire ${label} sign-in (zero input)`);
+  } else if (act === 'gt') {
+    streamLocal('/api/local/glitchtip-setup', { stack }, `wire ${label} crash tracking (zero input)`);
+  } else if (act === 'nuke') {
+    if (!confirm(`Delete the ${label.toUpperCase()} environment COMPLETELY?\n\nContainers, volumes INCLUDING its database server, its GoCardless consents, its vault folder — and the environment itself disappears from this page. Other environments and the shared services are untouched.\n\n(Store apps have no delete API: if app.munni.local.${s} exists in Play Console or App Store Connect, retire it there by hand.)`)) return;
+    await streamLocal('/api/local/envs/delete', { name: s }, `delete environment ${s}`);
+    await refreshLocal();
+    // cascade: the vault re-sync drops the deleted environment's folder
+    await streamLocal('/api/local/vault-setup', {}, 're-sync the vault (the deleted environment’s folder disappears)');
+    // cascade: the per-env Play auto-publish flag dies with the env
+    if (S.pat && S.user) {
+      try {
+        await gh(`/repos/${S.slug}/environments/local/variables/${publishFlagName(s)}`, { method: 'DELETE' });
+        localLog(`\nGitHub: dropped the ${publishFlagName(s)} auto-publish flag.\n`);
+      } catch { /* never set — nothing to drop */ }
+    }
+  } else if (act === 'subs') {
+    const subs = document.getElementById(`in-subs-${s}`).value.trim();
+    if (!subs) { localLog('\nPaste a Logto User ID first.\n'); return; }
+    if (await streamLocal('/api/local/run', { stack, values: { NAS_ADMIN_SUBS: subs } }, `store ${label} admin access`)) {
+      await streamLocal('/api/local/tool', { tool: `${stack}:up` }, 'restart the api with admin access');
+    }
+  } else if (act === 'oobe') {
+    const values = {
+      IAC_LOGTO_INFRA_M2M_ID: document.getElementById(`in-m2m-id-${s}`).value.trim(),
+      IAC_LOGTO_INFRA_M2M_SECRET: document.getElementById(`in-m2m-secret-${s}`).value.trim(),
+    };
+    if (!values.IAC_LOGTO_INFRA_M2M_ID || !values.IAC_LOGTO_INFRA_M2M_SECRET) { localLog('\nBoth the app id and the secret are needed.\n'); return; }
+    if (await streamLocal('/api/local/run', { stack, values }, `apply ${label} sign-in setup`)) {
+      document.getElementById(`in-m2m-secret-${s}`).value = '';
+      await streamLocal('/api/local/tool', { tool: `${stack}:up` }, 'restart web/admin with the new config');
+    }
+  } else if (act === 'gtapply') {
+    const token = document.getElementById(`in-gt-${s}`).value.trim();
+    if (!token) { localLog('\nPaste the GlitchTip token first.\n'); return; }
+    if (await streamLocal('/api/local/run', { stack, values: { IAC_GLITCHTIP_API_TOKEN: token } }, `apply ${label} crash tracking`)) {
+      document.getElementById(`in-gt-${s}`).value = '';
+      await streamLocal('/api/local/tool', { tool: `${stack}:up` }, 'restart with the DSNs wired in');
+    }
+  }
+});
+document.querySelectorAll('[data-local-tool]').forEach((btn) => btn.addEventListener('click', () => {
+  streamLocal('/api/local/tool', { tool: btn.dataset.localTool }, btn.textContent.trim());
+}));
+document.getElementById('btn-local-reveal')?.addEventListener('click', async () => {
+  const box = document.getElementById('local-secrets');
+  if (!box.hidden) { box.hidden = true; box.innerHTML = ''; document.getElementById('btn-local-reveal').textContent = 'Reveal secrets here'; return; }
+  const res = await hfetch('/api/local/secrets');
+  const { values } = await res.json();
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const shared = values[SHARED_STACK] ?? {};
+  // the SIGN-INS people actually type somewhere, assembled per stack
+  const signIns = [];
+  for (const env of S.envList) {
+    const v = values[env.stack] ?? {};
+    const l = envLabel(env.name).toLowerCase();
+    if (v.LOGTO_APP_ADMIN_USERNAME && v.LOGTO_APP_ADMIN_PASSWORD) signIns.push({ name: `munni app — ${l} (admin)`, url: env.web, user: v.LOGTO_APP_ADMIN_USERNAME, pass: v.LOGTO_APP_ADMIN_PASSWORD });
+    if (v.LOGTO_CONSOLE_USERNAME && v.LOGTO_CONSOLE_PASSWORD) signIns.push({ name: `Logto console — ${l}`, url: env.logtoAdmin, user: v.LOGTO_CONSOLE_USERNAME, pass: v.LOGTO_CONSOLE_PASSWORD });
+  }
+  if (shared.GLITCHTIP_ADMIN_EMAIL && shared.GLITCHTIP_ADMIN_PASSWORD) signIns.push({ name: 'GlitchTip (family-wide)', url: 'http://localhost:8383', user: shared.GLITCHTIP_ADMIN_EMAIL, pass: shared.GLITCHTIP_ADMIN_PASSWORD });
+  if (shared.NAS_PGADMIN_PASSWORD) signIns.push({ name: 'pgAdmin (all database servers)', url: 'http://localhost:8386', user: 'admin@munni.dev', pass: shared.NAS_PGADMIN_PASSWORD });
+  for (const env of S.envList) {
+    const v = values[env.stack] ?? {};
+    if (v.NAS_POSTGRES_PASSWORD) signIns.push({ name: `Postgres — ${envLabel(env.name).toLowerCase()} (its own server)`, url: '', user: 'munni', pass: v.NAS_POSTGRES_PASSWORD });
+  }
+  if (shared.NAS_POSTGRES_PASSWORD) signIns.push({ name: 'Postgres — glitchtip-db (shared)', url: '', user: 'munni', pass: shared.NAS_POSTGRES_PASSWORD });
+  if (shared.VAULT_ADMIN_EMAIL && shared.VAULT_MASTER_PASSWORD) {
+    signIns.push({ name: 'Vaultwarden (master password)', url: 'https://localhost:8384', user: shared.VAULT_ADMIN_EMAIL, pass: shared.VAULT_MASTER_PASSWORD });
+  } else {
+    signIns.push({ name: 'Vaultwarden', url: 'https://localhost:8384', user: '(not set up yet)', pass: '(press Set up the vault automatically)' });
+  }
+  const signInRows = signIns.map((l) =>
+    `<tr><td style="padding:2px 10px 2px 0"><b>${esc(l.name)}</b>${l.url ? ` <a href="${l.url}" target="_blank" rel="noreferrer" style="font-size:11px">open</a>` : ''}</td><td style="padding:2px 10px 2px 0"><code style="user-select:all">${esc(l.user)}</code></td><td><code style="user-select:all">${esc(l.pass)}</code></td></tr>`);
+  const rawSections = Object.entries(values).map(([stackName, vals]) => {
+    const rows = Object.entries(vals ?? {}).filter(([, v]) => v).map(([name, value]) =>
+      `<tr><td style="padding:2px 10px 2px 0"><code>${esc(name)}</code></td><td><code style="user-select:all">${esc(value)}</code></td></tr>`);
+    return rows.length ? `<div style="font-size:11px;color:var(--muted);margin:10px 0 4px">${esc(labelOf(stackName).toUpperCase())}</div><div style="overflow-x:auto"><table style="font-size:12px">${rows.join('')}</table></div>` : '';
+  }).join('');
+  box.innerHTML = `<p class="why">Shown on your request only — nothing here is logged. Click a value to select it.</p>
+    <div class="m-cap" style="font-size:11px;color:var(--muted);margin:4px 0">SIGN-INS</div>
+    <div style="overflow-x:auto"><table style="font-size:12px">${signInRows.join('')}</table></div>
+    <div style="font-size:11px;color:var(--muted);margin:10px 0 4px">RAW VALUES (tokens, keys, ids)</div>
+    ${rawSections || '<p class="why">nothing stored yet — run Set up first</p>'}`;
+  box.hidden = false;
+  document.getElementById('btn-local-reveal').textContent = 'Hide secrets';
+});
+document.getElementById('btn-local-nuke-all')?.addEventListener('click', async () => {
+  if (!confirm('Delete EVERYTHING — every environment (production included) AND the shared services?\n\nAll containers, volumes (every database), networks, the bank consents the environments created at GoCardless — and the environments themselves are forgotten: a later Set up & start recreates production fresh. The credentials you entered in step 3 stay stored.\n\nThe family certificate dies with the volumes: after the next Set up, this PC re-trusts automatically (one Windows dialog) and PHONES need the new root.crt installed again.\n\n(Store apps have no delete API: retire any app.munni.local.* in Play Console / App Store Connect by hand.)')) return;
+  setMasterBusy(true);
+  try {
+  for (const name of [...S.envList.map((e) => e.stack), SHARED_STACK]) {
+    await streamLocal('/api/local/cleanup', { target: name }, `delete ${labelOf(name)}`);
+  }
+  try {
+    const fr = await (await hfetch('/api/local/envs/forget-all', { method: 'POST', body: '{}' })).json();
+    localLog(`\nenvironments forgotten: ${fr.forgotten.join(', ') || '(none)'} — Set up & start recreates production fresh\n`);
+  } catch (e) { localLog(`\ncould not forget the environments: ${e.message}\n`); }
+  // the GitHub environment `local` loses ALL its variables (NATIVE_*
+  // config + per-env publish flags — user report 2026-08-30: leftovers
+  // looked like a half-done delete); its SECRETS stay — the signing
+  // keystore must survive, or a re-setup would mint a new upload key
+  // that Play rejects. Unless the whole REPO is already gone (users may
+  // delete it FIRST; the local teardown must shrug, not stumble).
+  if (S.pat && S.user) {
+    try {
+      const repoAlive = await gh(`/repos/${S.slug}`, { allow404: true });
+      if (repoAlive) {
+        const lv = (await gh(`/repos/${S.slug}/environments/local/variables?per_page=100`, { allow404: true }))?.variables ?? [];
+        for (const v of lv) {
+          try { await gh(`/repos/${S.slug}/environments/local/variables/${encodeURIComponent(v.name)}`, { method: 'DELETE' }); } catch { /* raced */ }
+        }
+        if (lv.length) localLog(`\nGitHub: cleared ${lv.length} variables from environment local (its secrets — the signing keystore — stay on purpose).\n`);
+      } else {
+        localLog(`\n${S.slug} no longer exists on GitHub — nothing left to clean there.\n`);
+      }
+    } catch { /* offline or blocked — the local teardown already finished */ }
+  }
+  } finally {
+    setMasterBusy(false);
+    await refreshLocal();
+  }
+});
+document.getElementById('btn-dev-nuke')?.addEventListener('click', () => {
+  if (!confirm('Delete the from-source DEV LOOP completely?\n\nThis stops its containers and removes its volumes (dev database included), its network, and revokes the bank consents the dev app created at GoCardless.')) return;
+  streamLocal('/api/local/cleanup', { target: 'devsource' }, 'delete the dev loop (containers + volumes + GoCardless consents)');
+});
+
+/* ── native apps: CI builds, phones install (LAN mode locally) ── */
+/* master buttons lock as ONE ROW (user request 2026-08-31: Start must
+ * not be pressable mid-delete) — refreshLocal respects the lock */
+const MASTER_BUTTONS = ['btn-local-setup', 'btn-local-stopall', 'btn-local-verify', 'btn-trust-ca', 'btn-local-nuke-all'];
+function setMasterBusy(busy) {
+  S.masterBusy = busy;
+  for (const id of MASTER_BUTTONS) {
+    const b = document.getElementById(id);
+    if (b) b.disabled = busy;
+  }
+}
+
+/* the network mode is AUTOMATIC (user ruling 2026-08-28): localhost is
+ * the simple default; a feature that needs the network (phones cannot
+ * reach localhost; Enable Banking demands real https) flips the family
+ * to LAN, and unticking them all flips it back — no manual buttons */
+const needLanNow = () => S.platform === 'local' && Boolean(S.features.android || S.features.ios || S.features.enablebanking);
+async function reconcileLanMode() {
+  if (!HELPER || localBusy) return;
+  const lan = await (await hfetch('/api/local/lan')).json();
+  const need = needLanNow();
+  if (need && !lan.current) {
+    const host = lan.candidates?.[0];
+    if (!host) { localLog('\nno LAN address found — are you on wifi/ethernet?\n'); return; }
+    await streamLocal('/api/local/lan', { host }, `a phone/https feature is on — LAN mode turns on by itself (${host})`);
+  } else if (!need && lan.current) {
+    await streamLocal('/api/local/lan', { host: '' }, 'no feature needs the network — back to simple localhost by itself');
+  }
+}
+document.getElementById('btn-trust-ca')?.addEventListener('click', () =>
+  streamLocal('/api/local/trust-ca', {}, 'trust the family certificate on this PC (one Windows dialog)'));
+
+async function ghUpsertEnvVar(envName, name, value) {
+  const base = `/repos/${S.slug}/environments/${encodeURIComponent(envName)}/variables`;
+  // PATCH first: after the first build every variable exists, so the
+  // common path stays quiet (the old POST-first sprayed 409s in devtools)
+  try {
+    await gh(`${base}/${encodeURIComponent(name)}`, { method: 'PATCH', body: JSON.stringify({ name, value }) });
+  } catch {
+    await gh(base, { method: 'POST', body: JSON.stringify({ name, value }) });
+  }
+}
+const nativeTargetStack = () => document.getElementById('native-env-select')?.value || 'munni-local-prod';
+const nativeTargetEnv = () => nativeTargetStack().replace('munni-local-', '');
+/** the copy speaks in the SELECTED environment's real app id, not <env>
+ * — the helper's answer wins (it carries the store-package generation) */
+function updateNativeAppIdLabels(authoritativeId) {
+  const id = authoritativeId ?? `app.munni.local.${nativeTargetEnv()}`;
+  document.querySelectorAll('[data-native-appid]').forEach((el) => { el.textContent = id; });
+}
+document.getElementById('btn-apply-package')?.addEventListener('click', async () => {
+  const env = nativeTargetEnv();
+  const suffix = document.getElementById('native-suffix').value.trim().toLowerCase();
+  if (!/^[a-z][a-z0-9]{1,29}$/.test(suffix)) {
+    msg('msg-native-local', 'the package suffix must be 2-30 letters/digits, starting with a letter (like prod2, phone, beta)', false);
+    return;
+  }
+  if (!confirm(`Set ${env}'s store package to app.munni.local.${suffix}?\n\nThe environment, its data and sign-in stay untouched — only the package identity changes. A NEW name needs its Play/ASC records created once (this page detects them); previously used names keep their store records.`)) return;
+  await streamLocal('/api/local/new-store-package', { stack: nativeTargetStack(), suffix }, `set ${env}'s store package to app.munni.local.${suffix}`);
+  await refreshStoreStatus().catch(() => {});
+});
+async function writeLocalNativeEnv() {
+  const cfg = await (await hfetch(`/api/local/native-config?stack=${encodeURIComponent(nativeTargetStack())}`)).json();
+  if (!cfg.ready) throw new Error('not ready: ' + cfg.missing.join(' · '));
+  await ensureEnv('local');
+  for (const [name, value] of Object.entries(cfg.variables)) await ghUpsertEnvVar('local', name, value);
+  return cfg;
+}
+
+/* PER environment (each is its own Play app — app.munni.local.<env>):
+ * dev's first build must not auto-upload just because prod's store app
+ * already exists */
+const publishFlagName = (env) => `NATIVE_LOCAL_CHANNEL_${env.toUpperCase()}`;
+const localPublishEnabled = async (env) => {
+  const v = await gh(`/repos/${S.slug}/environments/local/variables/${publishFlagName(env)}`, { allow404: true });
+  return v?.value === 'true';
+};
+
+/* no Enable-publish button (user ruling 2026-08-28): the page POLLS the
+ * stores with the step-3 credentials and flips the flag itself the
+ * moment the one-time manual upload exists */
+const STORE_POLL_MS = 3 * 60 * 1000;
+async function refreshStoreStatus() {
+  if (S.platform !== 'local' || !HELPER || !(S.features.android || S.features.ios)) return;
+  // NEVER probe while a build is publishing: the probe's throwaway Play
+  // edit expires the CI upload's edit (killed a real release 2026-08-30)
+  if (S.buildInFlight) return;
+  // …and once auto-publish is on there is nothing left to detect
+  if (S.pat && S.user && S.features.android) {
+    try {
+      if (await localPublishEnabled(nativeTargetEnv())) {
+        setPill('play-status-pill', 'auto-publish on ✓', true);
+        if (!S.features.ios) return;
+      }
+    } catch { /* connection hiccup — probe as usual */ }
+  }
+  let st;
+  try {
+    st = await (await hfetch(`/api/local/store-status?stack=${encodeURIComponent(nativeTargetStack())}`)).json();
+  } catch { return; }
+  if (st.error) return;
+  updateNativeAppIdLabels(st.appId);
+  // the suffix field mirrors the real package — without stomping typing
+  const suffixEl = document.getElementById('native-suffix');
+  if (suffixEl && document.activeElement !== suffixEl && st.appId) {
+    suffixEl.value = st.appId.replace('app.munni.local.', '');
+  }
+  const pillText = { ready: 'store app found ✓', 'missing-app': 'waiting for the one-time store upload…', 'no-creds': 'add the credential in step 3 to auto-detect' };
+  // a specific diagnosis (invite missing, app invisible…) beats the
+  // generic label; a TRANSIENT provider hiccup keeps the last verdict
+  if (S.features.android && st.play.state !== 'transient') setPill('play-status-pill', st.play.detail ?? pillText[st.play.state] ?? st.play.state, st.play.state === 'ready');
+  if (S.features.ios && st.ios.state !== 'transient') setPill('asc-status-pill', st.ios.detail ?? pillText[st.ios.state] ?? st.ios.state, st.ios.state === 'ready');
+  if (!S.pat || !S.user) return;
+  try {
+    const flag = await localPublishEnabled(st.localEnv);
+    if (st.play.state === 'ready' && !flag) {
+      await ensureEnv('local');
+      await ghUpsertEnvVar('local', publishFlagName(st.localEnv), 'true');
+      msg('msg-native-local', `${st.appId} found at Play ✓ — auto-publish is ON for ${st.localEnv}; every build lands in the internal track by itself`, true);
+    } else if (st.play.state === 'missing-app' && flag) {
+      // the flag can lie (it survives store/db resets) — store reality wins
+      await ghUpsertEnvVar('local', publishFlagName(st.localEnv), 'false');
+      msg('msg-native-local', `${st.appId} does not exist at Play — auto-publish for ${st.localEnv} is off until the one-time upload appears (this page keeps watching)`, false);
+    }
+  } catch { /* connection hiccup — the next poll retries */ }
+}
+/** what the STORE says about the target env's Play app (flag-independent) */
+async function playStateFor(stack) {
+  try {
+    const st = await (await hfetch(`/api/local/store-status?stack=${encodeURIComponent(stack)}`)).json();
+    return st.error ? 'error' : st.play.state;
+  } catch { return 'error'; }
+}
+/** publishing credentials ride from the LOCAL store into the TARGET
+ * repo's environment `local` right before a dispatch needs them — a
+ * fresh copy has no secrets at all, and the store check alone made the
+ * wizard claim "published" while CI silently skipped the upload (found
+ * live 2026-08-30). Returns false when the store cannot supply them. */
+async function ensureLocalEnvSecrets(names, label) {
+  await ensureEnv('local');
+  const have = new Set(((await gh(`/repos/${S.slug}/environments/local/secrets?per_page=100`, { allow404: true }))?.secrets ?? []).map((x) => x.name));
+  const missing = names.filter((n) => !have.has(n));
+  if (!missing.length) return true;
+  const all = await (await hfetch('/api/local/secrets')).json();
+  const store = Object.assign({}, ...Object.values(all.values));
+  const absent = missing.filter((n) => !store[n]);
+  for (const n of missing) {
+    if (store[n]) await putSecretAt(`/repos/${S.slug}/environments/local`, n, store[n]);
+  }
+  if (absent.length) {
+    msg('msg-native-local', `${label} needs ${absent.join(', ')} — add it in step 3 first`, false);
+    return false;
+  }
+  localLog(`\n${label}: ${missing.join(', ')} written into the repo's environment local (from the machine store).\n`);
+  return true;
+}
+setInterval(() => { refreshStoreStatus().catch(() => {}); }, STORE_POLL_MS);
+document.getElementById('native-env-select')?.addEventListener('change', () => { updateNativeAppIdLabels(); refreshStoreStatus().catch(() => {}); });
+updateNativeAppIdLabels();
+setTimeout(() => refreshStoreStatus().catch(() => {}), 4000);
+/** items 1+2 of the native ruling: toggling the feature IS the trigger,
+ * and LAN mode flips on by itself — no localhost detour, no extra click */
+async function ensureLanMode() {
+  const lan = await (await hfetch('/api/local/lan')).json();
+  if (lan.current) return true;
+  const host = lan.candidates?.[0];
+  if (!host) { localLog('\nno LAN address found — are you on wifi/ethernet?\n'); return false; }
+  return streamLocal('/api/local/lan', { host }, `LAN mode on automatically (${host}) — phones must reach this machine`);
+}
+
+async function buildLocalAndroidFlow() {
+  const btn = document.getElementById('btn-native-local-android');
+  const say = (t, ok = true) => msg('msg-native-local', t, ok);
+  if (!S.pat || !S.user) { say('Connect GitHub first (the GitHub card in step 3) — the build runs in your repo’s Actions.', false); return; }
+  btn.disabled = true;
+  S.buildInFlight = true; // pause the store polls — their Play edits expire the upload's
+  try {
+    if (!(await ensureLanMode())) return;
+    say('writing the LAN config into the GitHub environment "local"…');
+    const cfg = await writeLocalNativeEnv();
+    // the MACHINE keystore signs every repo's builds (Play pins the
+    // first upload key forever — repo-minted keys died with deleted
+    // repos, 2026-08-31); mint once, then ship it into this repo
+    await streamLocal('/api/local/mint-keystore', {}, 'ensure the machine upload keystore (one key across every repo)');
+    await ensureLocalEnvSecrets(['ANDROID_KEYSTORE_BASE64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_ALIAS', 'ANDROID_KEY_PASSWORD'], 'build signing').catch(() => {});
+    // the STORE decides whether to publish (found live 2026-08-28: a
+    // stale flag claimed "published" while nothing existed at Play);
+    // the flag only breaks ties when no credential is stored to check
+    const playState = await playStateFor(nativeTargetStack());
+    let publish = 'skip';
+    if (playState === 'ready') publish = 'auto';
+    else if (playState === 'no-creds' && (await localPublishEnabled(cfg.localEnv))) publish = 'auto';
+    // auto only means auto when the REPO can actually publish
+    if (publish === 'auto' && !(await ensureLocalEnvSecrets(['PLAY_SERVICE_ACCOUNT_JSON'], 'Play publishing'))) publish = 'skip';
+    const started = Date.now();
+    await dispatch('native-android.yml', { environment: 'local', localEnv: cfg.localEnv, publish });
+    say(`build dispatched for ${cfg.appId} (${publish === 'skip' ? 'upload skipped until the one-time Play setup' : 'auto-publish on'}) — CI is compiling (usually 6-10 min)…`);
+    let run = null;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 15000));
+      const runs = (await workflowRuns('native-android.yml'))?.workflow_runs ?? [];
+      run = runs.find((r2) => r2.event === 'workflow_dispatch' && new Date(r2.created_at).getTime() > started - 120000);
+      if (run) say(`build ${run.status === 'completed' ? run.conclusion : run.status} — run #${run.run_number}…`, run.conclusion !== 'failure');
+      if (run?.status === 'completed') break;
+      if (Date.now() - started > 30 * 60 * 1000) throw new Error('CI never finished within 30 minutes — check the Actions tab');
+    }
+    if (run.conclusion !== 'success') throw new Error(`the build ended ${run.conclusion} — open the run to see why`);
+    if (publish === 'auto') {
+      say('build green ✓ — published to the Play internal track. Your phone picks it up from Play (internal testing) shortly.');
+      return;
+    }
+    // first build: hand over the signed bundle for the one-time manual upload
+    say('build green ✓ — fetching the signed .aab for the ONE-TIME Play upload…');
+    const arts = await gh(`/repos/${S.slug}/actions/runs/${run.id}/artifacts`);
+    const art = (arts?.artifacts ?? []).find((a) => a.name === 'munni-android-release');
+    if (!art) throw new Error('no signed bundle on the run — this repo has neither ANDROID_KEYSTORE_* secrets nor IAC_GH_PAT (a fresh copy starts empty: secrets never ride along). Press Store as IAC_GH_PAT in step 3 and rebuild — the workflow then MINTS an upload keystore automatically and keeps it as environment secrets.');
+    const zipRes = await fetch(art.archive_download_url, { headers: { authorization: 'Bearer ' + S.pat } });
+    if (!zipRes.ok) throw new Error(`artifact download failed (${zipRes.status})`);
+    const blob = await zipRes.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'munni-android-release.zip';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    say('signed bundle downloaded ✓ — unzip it and do the one-time Play upload (see the fold below); this page notices by itself and turns auto-publish on.');
+    refreshStoreStatus().catch(() => {});
+  } catch (e) {
+    say('✗ ' + (e.message || e), false);
+  } finally {
+    S.buildInFlight = false;
+    btn.disabled = false;
+  }
+}
+document.getElementById('btn-native-local-android')?.addEventListener('click', () => buildLocalAndroidFlow());
+
+async function dispatchLocalIosFlow() {
+  const say = (t, ok = true) => msg('msg-native-ios', t, ok);
+  const btn = document.getElementById('btn-native-local-ios');
+  if (!S.pat || !S.user) { say('Connect GitHub first (the GitHub card in step 3) — the build runs in your repo’s Actions.', false); return; }
+  btn.disabled = true;
+  try {
+    if (!(await ensureLanMode())) { say('LAN mode could not come up — see the output box.', false); return; }
+    const cfg = await writeLocalNativeEnv();
+    // the iOS job is gated on IOS_BUILD_ENABLED — a fresh copy does not
+    // inherit it and the run silently SKIPS (found live 2026-08-30);
+    // asking for an iOS build IS the opt-in
+    await ghUpsertRepoVar('IOS_BUILD_ENABLED', 'true');
+    // App ID + capabilities as code (only the ASC New-App record has no
+    // create-API) — best effort, the fold explains the manual fallback
+    await streamLocal('/api/local/ios-appid', { stack: nativeTargetStack() }, 'register the Apple App ID + capabilities (push, Sign in with Apple, associated domains)');
+    // TestFlight upload credentials must live in THIS repo (fresh copies
+    // start secret-less) — best effort, the build still runs without
+    await ensureLocalEnvSecrets(['ASC_KEY_ID', 'ASC_ISSUER_ID', 'ASC_KEY_P8', 'APPLE_TEAM_ID'], 'TestFlight upload').catch(() => {});
+    const started = Date.now();
+    await dispatch('native-ios.yml', { environment: 'local', localEnv: cfg.localEnv });
+    say(`iOS build dispatched for ${cfg.appId} — CI signs and uploads to TestFlight (usually 15-25 min)…`);
+    let run = null;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 20000));
+      const runs = (await workflowRuns('native-ios.yml'))?.workflow_runs ?? [];
+      run = runs.find((r2) => r2.event === 'workflow_dispatch' && new Date(r2.created_at).getTime() > started - 120000);
+      if (run) say(`build ${run.status === 'completed' ? run.conclusion : run.status} — run #${run.run_number}…`, run.conclusion !== 'failure');
+      if (run?.status === 'completed') break;
+      if (Date.now() - started > 45 * 60 * 1000) throw new Error('CI never finished within 45 minutes — check the Actions tab');
+    }
+    if (run.conclusion === 'skipped') {
+      say('the iOS job was SKIPPED — its gates (IOS_BUILD_ENABLED, repo initialization) were off when it started. Both are set now: press Build again.', false);
+    } else if (run.conclusion === 'success') {
+      say(`build green ✓ — ${cfg.appId} is on its way to TestFlight (App Store Connect processes it for a few minutes). Install/update via the TestFlight app; the build only works on this wifi.`);
+    } else {
+      say(`the build ended ${run.conclusion} — open run #${run.run_number} under Actions for the reason (missing ASC app record? signing?).`, false);
+    }
+  } catch (e) {
+    say('✗ ' + (e.message || e), false);
+  } finally {
+    btn.disabled = false;
+  }
+}
+document.getElementById('btn-native-local-ios')?.addEventListener('click', () => dispatchLocalIosFlow());
+
+/** toggling Android/iOS ON under local starts the whole chain by itself
+ * (LAN mode → env vars → CI build → Play/TestFlight); without the
+ * GitHub connection it queues and fires right after connecting */
+async function autoNativeFlow(kind) {
+  if (S.platform !== 'local' || !HELPER) return;
+  if (!S.pat || !S.user) {
+    msg('msg-native-local', 'connect GitHub (the card in step 3) — the build starts by itself once connected', false);
+    S.pendingNativeBuild = kind;
+    return;
+  }
+  if (kind === 'android') await buildLocalAndroidFlow();
+  else await dispatchLocalIosFlow();
+}
+document.querySelectorAll('[data-artifact]').forEach((btn) => btn.addEventListener('click', async () => {
+  const name = btn.dataset.artifact;
+  try {
+    msg('msg-native', 'looking for the newest green Android build…', true);
+    const runs = (await workflowRuns('native-android.yml'))?.workflow_runs ?? [];
+    const run = runs.find((r) => r.status === 'completed' && r.conclusion === 'success');
+    if (!run) throw new Error('no green native-android run yet — build first');
+    const arts = await gh(`/repos/${S.slug}/actions/runs/${run.id}/artifacts`);
+    const art = (arts?.artifacts ?? []).find((a) => a.name === name);
+    if (!art) throw new Error(`run #${run.run_number} has no ${name} artifact${name.includes('release') ? ' — the signed lane needs the keystore secrets' : ''}`);
+    const zipRes = await fetch(art.archive_download_url, { headers: { authorization: 'Bearer ' + S.pat } });
+    if (!zipRes.ok) throw new Error(`download failed (${zipRes.status})`);
+    const blob = await zipRes.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${name}.zip`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    msg('msg-native', `${name}.zip downloaded from run #${run.run_number} — unzip it for the binary ✓`, true);
+  } catch (e) {
+    msg('msg-native', '✗ ' + (e.message || e), false);
+  }
+}));
+document.getElementById('btn-local-vault-auto')?.addEventListener('click', () =>
+  streamLocal('/api/local/vault-setup', {}, 'set up the vault (account + every secret imported + signups closed)'));
+document.getElementById('btn-local-vault-export')?.addEventListener('click', async () => {
+  const res = await hfetch('/api/local/vault-export');
+  const blob = new Blob([JSON.stringify(await res.json(), null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'munni-local-vault-import.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  localLog('\nVault import file downloaded — in Vaultwarden: Tools → Import data → Bitwarden (json). Delete the file after importing.\n');
+});
+applyPlatform();
+applyDomain();
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- hosted flavors: the platform default, spelled out — public CAs
+     only, no cleartext. The LOCAL flavor overrides this file (flavor
+     res wins) to additionally trust user-installed CAs, because the
+     munni-local family signs its sslip.io hostnames with a Caddy CA
+     minted on the operator's machine. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

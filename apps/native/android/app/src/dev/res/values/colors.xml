@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- matches the icon artwork's background so the adaptive-icon border
+         blends seamlessly (brand dark mint, M.brand) -->
+    <color name="dev_icon_bg">#08372B</color>
+</resources>

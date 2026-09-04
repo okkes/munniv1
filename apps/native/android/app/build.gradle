@@ -1,0 +1,110 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace "app.munni"
+    compileSdk rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "app.munni"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        // CI feeds these (git commit count / package.json version) so every
+        // Play upload has a strictly increasing versionCode
+        versionCode Integer.parseInt(System.getenv('ANDROID_VERSION_CODE') ?: '1')
+        versionName System.getenv('ANDROID_VERSION_NAME') ?: '1.0'
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    // three store identities installable side by side: the production app
+    // (app.munni, munni://), the staging app fed from the dev branch
+    // (app.munni.dev, munni-dev://), and the wizard-managed LAN build
+    // (app.munni.local, munni-local:// — CI environment `local`, delivered
+    // through the Play internal track like the others). google-services
+    // clients live in google-services.json per package; the local flavor
+    // carries its own stub at src/local/google-services.json (replace it
+    // with a real Firebase download to activate push there).
+    flavorDimensions += 'channel'
+    productFlavors {
+        prod {
+            dimension 'channel'
+            manifestPlaceholders = [munniScheme: 'munni', munniLabel: 'munni', munniHost: 'munni.okkes.synology.me']
+        }
+        dev {
+            dimension 'channel'
+            applicationIdSuffix '.dev'
+            manifestPlaceholders = [munniScheme: 'munni-dev', munniLabel: 'munni dev', munniHost: 'munni-test.okkes.synology.me']
+        }
+        local {
+            dimension 'channel'
+            // ONE flavor, MANY store identities: CI feeds the target
+            // environment's id/scheme/label (app.munni.local.prod,
+            // app.munni.local.dev, … installable side by side).
+            // munniHost deliberately dead: the LAN build has no https
+            // host and must never claim the real apps' universal links.
+            applicationId System.getenv('LOCAL_APP_ID') ?: 'app.munni.local.prod'
+            manifestPlaceholders = [
+                munniScheme: System.getenv('LOCAL_SCHEME') ?: 'munni-local',
+                munniLabel: System.getenv('LOCAL_LABEL') ?: 'munni prod',
+                munniHost: 'local.munni.invalid'
+            ]
+        }
+    }
+    // release signing comes from CI env (repo secrets); local builds
+    // without the keystore still assemble debug just fine
+    signingConfigs {
+        release {
+            if (System.getenv('ANDROID_KEYSTORE_PATH')) {
+                storeFile file(System.getenv('ANDROID_KEYSTORE_PATH'))
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            // R8 shrinks the (small) Java layer and produces the mapping
+            // file Play wants for readable crash reports; the webview JS
+            // is untouched. CI uploads the mapping with every release.
+            minifyEnabled true
+            shrinkResources true
+            // AGP 9 dropped 'proguard-android.txt' (it disabled R8 optimization)
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (System.getenv('ANDROID_KEYSTORE_PATH')) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

@@ -1,0 +1,27 @@
+# Automated versioning: release-please parses Conventional Commits on
+# master, maintains a release PR (version bump + CHANGELOG), and tags
+# vX.Y.Z + a GitHub release when that PR merges. package.json versions
+# are bumped via extra-files; the web build shows the version in
+# Settings via __APP_VERSION__.
+name: Release Please
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    # first-boot latch: fresh repo copies skip every run until the
+    # wizard marks the repo initialized (variable MUNNI_INITIALIZED)
+    if: ${{ vars.MUNNI_INITIALIZED == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          target-branch: master

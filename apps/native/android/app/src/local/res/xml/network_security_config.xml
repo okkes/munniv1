@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- LOCAL flavor only: the family CA rides INSIDE the app. CI bakes the
+     machine's real root into res/raw/family_ca.pem at build time (the
+     committed file is a placeholder with a discarded key), so the app
+     trusts https://munni-<env>.<ip-dashed>.sslip.io out of the box — no
+     manual install on the phone for the APP. User-installed CAs stay
+     trusted as the fallback (and for the phone's browser, root.crt from
+     http://ca.<ip-dashed>.sslip.io is still the way). Cleartext off. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="@raw/family_ca" />
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -1,0 +1,31 @@
+// munni-local-shared — the LOCAL machine's cross-environment services
+// (plan LS1): GlitchTip (with its OWN database server), Vaultwarden, OCR,
+// the munni-control cockpit and pgAdmin over the whole family. Each
+// environment (munni-local-dev / munni-local-prod) runs its OWN postgres;
+// they reach glitchtip/ocr here over the shared docker network
+// "munni-local-shared-net"; only browser-facing ports are published.
+// Start this stack FIRST — the env stacks join its network.
+{
+  "stack": "munni-local-shared",
+  "pair": "munni-local-shared",
+  "role": "shared",
+  "channel": "dev",
+  "target": "local",
+
+  "domain": "localhost",
+  "ports": {
+    "glitchtip": 8383,
+    "vault": 8384,
+    "control": 8385,
+    "pgadmin": 8386
+  },
+
+  // which environment's API + Logto the munni-control cockpit talks to
+  "controlApi": "munni-local-prod",
+
+  "registry": "ghcr.io/okkes",
+
+  "features": {
+    "telemetry": true
+  }
+}

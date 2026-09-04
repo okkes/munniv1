@@ -1,0 +1,34 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "simple",
+  "include-component-in-tag": false,
+  "changelog-path": "CHANGELOG.md",
+  "packages": {
+    ".": {}
+  },
+  "extra-files": [
+    {
+      "type": "json",
+      "path": "package.json",
+      "jsonpath": "$.version"
+    },
+    {
+      "type": "json",
+      "path": "apps/web/package.json",
+      "jsonpath": "$.version"
+    }
+  ],
+  "changelog-sections": [
+    { "type": "feat", "hidden": false, "section": "✨ Features" },
+    { "type": "fix", "hidden": false, "section": "🐞 Bug Fixes" },
+    { "type": "perf", "hidden": false, "section": "⚡ Performance" },
+    { "type": "revert", "hidden": false, "section": "⏪ Reverts" },
+    { "type": "build", "hidden": false, "section": "🛠️ Build System" },
+    { "type": "ci", "hidden": true, "section": "⚙️ Continuous Integration" },
+    { "type": "chore", "hidden": true, "section": "🧹 Chores" },
+    { "type": "docs", "hidden": true, "section": "📝 Documentation" },
+    { "type": "style", "hidden": true, "section": "🎨 Styles" },
+    { "type": "refactor", "hidden": true, "section": "♻️ Refactoring" },
+    { "type": "test", "hidden": true, "section": "🧪 Tests" }
+  ]
+}

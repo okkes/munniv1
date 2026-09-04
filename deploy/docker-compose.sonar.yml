@@ -1,0 +1,29 @@
+# LOCAL-ONLY SonarQube for code analysis — deliberately not part of the
+# NAS stack (needs ~2-3 GB RAM). Run it on your dev machine when you want
+# a quality report:
+#
+#   docker compose -f deploy/docker-compose.sonar.yml up -d
+#   # first time: http://localhost:9000, login admin/admin, set a new
+#   # password, My Account -> Security -> generate a token, then put
+#   # SONAR_TOKEN=<token> in deploy/env/.env.local
+#   ./deploy/sonar/analyze.ps1
+#
+# Stop it again with: docker compose -f deploy/docker-compose.sonar.yml down
+name: munni-sonar
+services:
+  sonarqube:
+    image: sonarqube:community
+    ports:
+      - "9000:9000"
+    environment:
+      # embedded DB is fine for a local, single-user analysis box
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    volumes:
+      - sonar_data:/opt/sonarqube/data
+      - sonar_extensions:/opt/sonarqube/extensions
+      - sonar_logs:/opt/sonarqube/logs
+
+volumes:
+  sonar_data:
+  sonar_extensions:
+  sonar_logs:
