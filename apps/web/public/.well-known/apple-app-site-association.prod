@@ -1,0 +1,15 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["__APPLE_TEAM_ID__.app.munni"],
+        "components": [
+          { "/": "/gc-callback*" },
+          { "/": "/splits/join/*" },
+          { "/": "/native-auth*" },
+          { "/": "/native-signed-out*" }
+        ]
+      }
+    ]
+  }
+}

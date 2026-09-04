@@ -1,0 +1,180 @@
+name: Build & push images
+
+on:
+  push:
+    branches: [main, master, dev]
+    paths:
+      - 'apps/web/**'
+      - 'server/**'
+      - 'package-lock.json'
+      - '.github/workflows/release-images.yml'
+  workflow_dispatch:
+
+# GHCR: the Synology registry is LAN-only (GH runners time out reaching it),
+# so images live in GitHub's registry and the NAS pulls from ghcr.io.
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  api-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet test server/Munni.slnx --collect:"XPlat Code Coverage" --results-directory coverage
+      - name: Coverage summary
+        run: |
+          FILE=$(find coverage -name 'coverage.cobertura.xml' | head -1)
+          if [ -n "$FILE" ]; then
+            RATE=$(grep -o 'line-rate="[0-9.]*"' "$FILE" | head -1 | grep -o '[0-9.]*')
+            echo "### API line coverage: $(awk "BEGIN{printf \"%.1f%%\", $RATE*100}")" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # PI1: one native build per architecture (no QEMU — full-speed .NET
+  # and Vite builds), merged into one multi-arch tag by the manifest
+  # job below. The NAS (amd64) and a Raspberry Pi (arm64) pull the
+  # same :dev/:latest tag and get their own layers.
+  images:
+    needs: api-tests
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      channel: ${{ steps.meta.outputs.channel }}
+      build: ${{ steps.meta.outputs.build }}
+    # GitHub Environment = the single source of per-stack config: the
+    # SAME variable name (VITE_API_URL, …) carries the right value per
+    # environment. No fallbacks — a missing variable fails the guard
+    # below instead of silently building a misconfigured image.
+    environment: ${{ github.ref_name == 'dev' && 'staging' || 'production' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Compute build number and channel
+        id: meta
+        run: |
+          for required in VITE_API_URL VITE_LOGTO_ENDPOINT VITE_LOGTO_APP_ID VITE_LOGTO_APP_ID_ADMIN; do
+            if [ -z "$(eval echo "\$$required")" ]; then
+              echo "::error::variable $required is not defined for this environment" && exit 1
+            fi
+          done
+          echo "build=$(git rev-list --count HEAD)" >> $GITHUB_OUTPUT
+          # master -> latest (production), dev -> dev (staging)
+          if [ "${GITHUB_REF_NAME}" = "dev" ]; then
+            echo "channel=dev" >> $GITHUB_OUTPUT
+            echo "app_channel=staging" >> $GITHUB_OUTPUT
+          else
+            echo "channel=latest" >> $GITHUB_OUTPUT
+            echo "app_channel=production" >> $GITHUB_OUTPUT
+          fi
+          echo "api_url=$VITE_API_URL" >> $GITHUB_OUTPUT
+          echo "logto_app=$VITE_LOGTO_APP_ID" >> $GITHUB_OUTPUT
+          echo "logto_app_admin=$VITE_LOGTO_APP_ID_ADMIN" >> $GITHUB_OUTPUT
+        env:
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+          VITE_LOGTO_ENDPOINT: ${{ vars.VITE_LOGTO_ENDPOINT }}
+          VITE_LOGTO_APP_ID: ${{ vars.VITE_LOGTO_APP_ID }}
+          VITE_LOGTO_APP_ID_ADMIN: ${{ vars.VITE_LOGTO_APP_ID_ADMIN }}
+
+      # AC3: bake the published catalog into the web bundle as the offline
+      # baseline (edits the checkout before it becomes the build context;
+      # any fetch failure keeps the committed null default)
+      - name: Bake catalog baseline
+        run: node apps/web/scripts/bake-catalog.mjs
+        env:
+          CATALOG_URL: ${{ steps.meta.outputs.api_url }}/catalog
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push api
+        uses: docker/build-push-action@v7
+        with:
+          context: server
+          file: server/src/Munni.Api/Dockerfile
+          push: true
+          # arch-suffixed staging tag only — the channel tags are minted
+          # by the manifest job once BOTH arches exist
+          tags: ${{ env.REGISTRY }}/munni-api:${{ steps.meta.outputs.channel }}-${{ steps.meta.outputs.build }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=api-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=api-${{ matrix.arch }}
+
+      - name: Build & push web
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: true
+          # per-stack config from the job's GitHub Environment
+          build-args: |
+            BUILD_NUMBER=${{ steps.meta.outputs.build }}
+            VITE_API_URL=${{ steps.meta.outputs.api_url }}
+            VITE_LOGTO_ENDPOINT=${{ vars.VITE_LOGTO_ENDPOINT }}
+            VITE_LOGTO_APP_ID=${{ steps.meta.outputs.logto_app }}
+            VITE_LOGTO_RESOURCE=${{ steps.meta.outputs.api_url }}
+            VITE_GLITCHTIP_DSN=${{ vars.VITE_GLITCHTIP_DSN }}
+            VITE_CHANNEL=${{ steps.meta.outputs.app_channel }}
+            APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}
+          tags: ${{ env.REGISTRY }}/munni-web:${{ steps.meta.outputs.channel }}-${{ steps.meta.outputs.build }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=web-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=web-${{ matrix.arch }}
+
+      - name: Build & push admin
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/admin/Dockerfile
+          push: true
+          build-args: |
+            VITE_API_URL=${{ steps.meta.outputs.api_url }}
+            VITE_LOGTO_ENDPOINT=${{ vars.VITE_LOGTO_ENDPOINT }}
+            VITE_LOGTO_APP_ID=${{ steps.meta.outputs.logto_app_admin }}
+            VITE_LOGTO_RESOURCE=${{ steps.meta.outputs.api_url }}
+            VITE_GLITCHTIP_DSN=${{ vars.VITE_GLITCHTIP_DSN_ADMIN }}
+          tags: ${{ env.REGISTRY }}/munni-admin:${{ steps.meta.outputs.channel }}-${{ steps.meta.outputs.build }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=admin-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=admin-${{ matrix.arch }}
+
+  # merge the per-arch pushes into the channel tags the hosts pull
+  manifest:
+    needs: images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create multi-arch manifests
+        run: |
+          CHANNEL='${{ needs.images.outputs.channel }}'
+          BUILD='${{ needs.images.outputs.build }}'
+          for image in munni-api munni-web munni-admin; do
+            docker buildx imagetools create \
+              -t "$REGISTRY/$image:$CHANNEL" \
+              -t "$REGISTRY/$image:$CHANNEL-$BUILD" \
+              "$REGISTRY/$image:$CHANNEL-$BUILD-amd64" \
+              "$REGISTRY/$image:$CHANNEL-$BUILD-arm64"
+            echo "### $image:$CHANNEL" >> $GITHUB_STEP_SUMMARY
+            docker buildx imagetools inspect "$REGISTRY/$image:$CHANNEL" | grep -E 'Platform|Digest' | head -6 >> $GITHUB_STEP_SUMMARY
+          done

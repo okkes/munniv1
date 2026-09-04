@@ -1,0 +1,63 @@
+# Web CI: unit tests (coverage) + Playwright e2e against the test stack.
+# The NAS serves the real app (deploy-nas.yml); Pages is unused.
+name: Web CI
+
+on:
+  push:
+    branches: [main, master, dev]
+  workflow_dispatch:
+    inputs:
+      run_all_tests:
+        description: 'Run all tests (ignore partial detection)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Chromium runs the gallery; WebKit runs the sheet-geometry guard
+      # (all of iOS is WebKit — its layout bugs are invisible to Blink).
+      # Installing on the ephemeral runner is the cheap path here; the
+      # local equivalent is dockerized instead: deploy/webkit-e2e.ps1
+      - run: npx playwright install --with-deps chromium webkit
+        working-directory: apps/web
+
+      # Unit tests with coverage (finance app: correctness paths must be covered)
+      - run: npx vitest run --coverage
+        working-directory: apps/web
+
+      # Sync API for the two-device e2e specs (they skip if this is down)
+      - name: Start sync test stack
+        run: docker compose -f deploy/docker-compose.test.yml up --build -d --wait
+
+      # Build the app (catches build-only breakage: SW, defines, chunks)
+      - run: npm run build
+        working-directory: apps/web
+
+      - name: Run Playwright tests
+        run: npx playwright test
+        working-directory: apps/web
+
+      # Upload test results (failure screenshots + traces) as downloadable artifact
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-results-${{ github.run_id }}
+          path: apps/web/tests/results/
+          retention-days: 7
