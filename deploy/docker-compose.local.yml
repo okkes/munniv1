@@ -1,0 +1,110 @@
+# Full-stack LOCAL test: real Logto + API + Postgres on localhost, the app
+# runs via the vite dev server (npm run dev). No HTTPS, no reverse proxy.
+#
+#   docker compose --env-file deploy/env/.env.local -f deploy/docker-compose.local.yml up -d --build
+#
+# Then follow "Local full-stack test" in deploy/README.md.
+name: munni-local
+services:
+  # every service restarts with the Docker daemon (unless-stopped), so the
+  # local stack survives a machine reboot like staging/prod do — before,
+  # only ocr had a policy and the stack came back half-alive
+  api:
+    restart: unless-stopped
+    build:
+      context: ../server
+      dockerfile: src/Munni.Api/Dockerfile
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Db: Host=postgres;Database=munni;Username=munni;Password=localtest
+      Db__AutoMigrate: "true"
+      # browser-visible issuer is localhost:3001; metadata fetched in-network
+      Auth__Authority: http://localhost:3001/oidc
+      Auth__MetadataAddress: http://logto:3001/oidc/.well-known/openid-configuration
+      Auth__RequireHttps: "false"
+      Auth__Audience: http://localhost:8180
+      Cors__Origins__0: http://localhost:5173
+      Cors__Origins__1: http://localhost:5175
+      GoCardless__SecretId: ${GOCARDLESS_SECRET_ID:-}
+      GoCardless__SecretKey: ${GOCARDLESS_SECRET_KEY:-}
+      EnableBanking__ApplicationId: ${ENABLEBANKING_APPLICATION_ID:-}
+      EnableBanking__PrivateKeyPem: ${ENABLEBANKING_PRIVATE_KEY_PEM:-}
+      Push__VapidPublicKey: ${PUSH_VAPID_PUBLIC_KEY:-}
+      Push__VapidPrivateKey: ${PUSH_VAPID_PRIVATE_KEY:-}
+      Push__Subject: ${PUSH_VAPID_SUBJECT:-mailto:admin@localhost}
+      Logos__SecretKey: ${LOGODEV_SECRET_KEY:-}
+      Logos__PublicToken: ${LOGODEV_PUBLIC_TOKEN:-}
+      Admin__Subs: ${ADMIN_SUBS:-}
+      Ocr__BaseUrl: http://ocr:8884
+      ImportWatch__Path: /import-watch
+      ImportWatch__OwnerSub: ${IMPORT_WATCH_OWNER_SUB:-}
+    ports:
+      - "8180:8080"
+    volumes:
+      - ${IMPORT_WATCH_HOST_DIR:-./import-watch}:/import-watch
+    depends_on:
+      postgres:
+        condition: service_healthy
+      logto:
+        condition: service_started
+
+  # receipt-photo OCR sidecar (receipts design): internal-only, stateless
+  ocr:
+    image: hertzg/tesseract-server:latest
+    restart: unless-stopped
+
+  logto:
+    restart: unless-stopped
+    image: svhd/logto:1.42
+    # seed FIRST: alteration-before-seed on an empty db half-creates tables
+    # and seed --swe then skips forever (RLS crash-loop; incident 2026-08-26)
+    entrypoint: ["sh", "-c", "npm run cli db seed -- --swe && npm run alteration deploy latest && npm start"]
+    environment:
+      TRUST_PROXY_HEADER: "0"
+      DB_URL: postgres://munni:localtest@postgres:5432/logto
+      ENDPOINT: http://localhost:3001
+      ADMIN_ENDPOINT: http://localhost:3002
+    ports:
+      - "3001:3001"
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # database inspector: http://localhost:8183 (admin@munni.dev / localtest)
+  # (pgadmin validates the domain — special-use TLDs like .local are refused)
+  pgadmin:
+    restart: unless-stopped
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@munni.dev
+      PGADMIN_DEFAULT_PASSWORD: localtest
+    ports:
+      - "8183:80"
+    volumes:
+      - pgadmin_local:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    restart: unless-stopped
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: munni
+      POSTGRES_PASSWORD: localtest
+      POSTGRES_DB: munni
+    volumes:
+      - pgdata18_local:/var/lib/postgresql
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U munni"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata18_local:
+    # fixed name: survives the compose-project rename (pre-existing data)
+    name: deploy_pgdata18_local
+  pgadmin_local:

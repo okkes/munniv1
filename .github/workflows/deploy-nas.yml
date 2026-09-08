@@ -1,0 +1,168 @@
+# Push the deploy bundle to the Synology NAS via the FileStation API
+# (user request: no SSH). Runs after the container images are built.
+# The NAS-side poller (deploy/nas/apply.sh, via the DSM Task Scheduler)
+# picks up the new stamp and runs update.sh.
+#
+# Channels:
+#   master → munni-deploy.tgz + VERSION           (prod + staging infra,
+#            including the rendered .env)
+#   dev    → munni-deploy-staging.tgz + VERSION_STAGING (staging only,
+#            so staging tests dev's compose changes before a release)
+#   manual dispatch with channel=iac-prod|iac-staging|iac-both →
+#            munni-deploy-iac-*.tgz + VERSION_IAC_* (the IaC twins:
+#            compose+env rendered from infra/ stack files, unpacked by
+#            the poller into their own /volume1/docker/<stack>/ dirs)
+#
+# Env files are rendered from deploy/env/.env.nas: ${NAS_*} placeholders
+# are filled from same-named secrets (deploy/nas/render-env.sh). The job
+# runs in the production/staging GitHub Environment matching the branch,
+# so one secret NAME can carry a different value per stack (VAPID pair,
+# postgres password); repo-level secrets are the shared defaults. The
+# master channel renders .env, the dev channel renders .env.staging —
+# no whole-.env secret, no manual NAS edits (deploy/nas/README.md).
+#
+# Secrets required (besides the NAS_* env values):
+#   SYNOLOGY_URL       e.g. https://<your-nas-domain>:5001
+#   SYNOLOGY_USER      a dedicated DSM account (FileStation write perm,
+#                      2FA OFF — the login API can't do interactive OTP)
+#   SYNOLOGY_PASS      that account's password
+#   SYNOLOGY_PATH      target folder, e.g. /docker/munni/published
+name: Deploy to NAS
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Deploy channel'
+        type: choice
+        options: [live, iac-prod, iac-staging, iac-both]
+        default: live
+  # after images rebuild…
+  workflow_run:
+    workflows: ["Build & push images"]
+    types: [completed]
+    branches: [master, dev]
+  # …and directly for infra-only changes, which never rebuild images
+  push:
+    branches: [master, dev]
+    paths:
+      - 'deploy/**'
+      - '.github/workflows/deploy-nas.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # workflow_run: only when the image build actually succeeded;
+    # push (infra-only) and manual dispatch always deploy — unless the
+    # dispatch asked for an iac channel (handled by deploy-iac below).
+    # First-boot latch: fresh copies skip until MUNNI_INITIALIZED.
+    if: ${{ vars.MUNNI_INITIALIZED == 'true' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && (github.event_name != 'workflow_dispatch' || (inputs.channel || 'live') == 'live') }}
+    runs-on: ubuntu-latest
+    environment: ${{ (github.event.workflow_run.head_branch || github.ref_name) == 'master' && 'production' || 'staging' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # bundle the files as they are on the branch that built the images
+          ref: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+
+      - name: Assemble the deploy bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          BRANCH="${{ github.event.workflow_run.head_branch || github.ref_name }}"
+          STAGE="$RUNNER_TEMP/bundle"
+          mkdir -p "$STAGE"
+          if [ "$BRANCH" = "master" ]; then
+            # prod channel: the full running stack's infra + rendered .env
+            cp deploy/docker-compose.yml deploy/docker-compose.staging.yml deploy/update.sh deploy/nas/apply.sh "$STAGE/"
+            for d in nginx initdb import-watch; do
+              [ -d "deploy/$d" ] && cp -r "deploy/$d" "$STAGE/"
+            done
+            bash deploy/nas/render-env.sh deploy/env/.env.nas "$STAGE/.env"
+            echo "bundle=munni-deploy.tgz" >> "$GITHUB_OUTPUT"
+            echo "stamp=VERSION" >> "$GITHUB_OUTPUT"
+          else
+            # staging channel: only what the staging stack runs from dev,
+            # plus its own env rendered from the staging environment
+            cp deploy/docker-compose.staging.yml deploy/update.sh deploy/nas/apply.sh "$STAGE/"
+            bash deploy/nas/render-env.sh deploy/env/.env.nas "$STAGE/.env.staging"
+            echo "bundle=munni-deploy-staging.tgz" >> "$GITHUB_OUTPUT"
+            echo "stamp=VERSION_STAGING" >> "$GITHUB_OUTPUT"
+          fi
+          tar -czf "$RUNNER_TEMP/bundle.tgz" -C "$STAGE" .
+          # NOT $GITHUB_SHA: under workflow_run that is the DEFAULT-branch
+          # tip — constant across dev pushes, so the NAS poller saw
+          # "nothing new" and staging froze (2026-07-24). Stamp with the
+          # commit that actually built the images.
+          echo "${{ github.event.workflow_run.head_sha || github.sha }}" > "$RUNNER_TEMP/stamp.txt"
+        env:
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+
+      - name: Upload to Synology FileStation (bundle first, stamp last)
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/bundle.tgz" "$RUNNER_TEMP/${{ steps.bundle.outputs.bundle }}"
+          cp "$RUNNER_TEMP/stamp.txt" "$RUNNER_TEMP/${{ steps.bundle.outputs.stamp }}"
+          bash deploy/nas/upload.sh \
+            "$RUNNER_TEMP/${{ steps.bundle.outputs.bundle }}" \
+            "$RUNNER_TEMP/${{ steps.bundle.outputs.stamp }}"
+        env:
+          SYNOLOGY_URL: ${{ secrets.SYNOLOGY_URL }}
+          SYNOLOGY_USER: ${{ secrets.SYNOLOGY_USER }}
+          SYNOLOGY_PASS: ${{ secrets.SYNOLOGY_PASS }}
+          SYNOLOGY_PATH: ${{ secrets.SYNOLOGY_PATH }}
+
+  # ── IaC twins: rendered from infra/ stack files, dispatched from the
+  # setup wizard (or Actions UI). The poller (deploy/nas/apply.sh) unpacks
+  # each into its own /volume1/docker/<stack>/ and composes it up there.
+  deploy-iac:
+    if: ${{ vars.MUNNI_INITIALIZED == 'true' && github.event_name == 'workflow_dispatch' && (inputs.channel || 'live') != 'live' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        stack: ${{ fromJSON(inputs.channel == 'iac-both' && '["munni-iac-prod","munni-iac-staging"]' || (inputs.channel == 'iac-prod' && '["munni-iac-prod"]' || '["munni-iac-staging"]')) }}
+    # the stack's environment carries its minted secrets + written-back
+    # variables; repo-level roots (SYNOLOGY_*, NAS_GHCR_PAT…) merge in
+    environment: ${{ matrix.stack == 'munni-iac-prod' && 'iac-production' || 'iac-staging' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Render + assemble the iac bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          node infra/bootstrap.mjs --stack "${{ matrix.stack }}" --render-only
+          SRC="infra/rendered/${{ matrix.stack }}"
+          STAGE="$RUNNER_TEMP/bundle"
+          mkdir -p "$STAGE"
+          cp "$SRC/docker-compose.${{ matrix.stack }}.yml" deploy/update.sh "$STAGE/"
+          cp -r "$SRC/initdb" "$STAGE/"
+          if [ "${{ matrix.stack }}" = "munni-iac-prod" ]; then
+            ENV_NAME=".env"; BUNDLE="munni-deploy-iac-prod.tgz"; STAMP="VERSION_IAC_PROD"
+          else
+            # update.sh resolves *staging* compose files to .env.staging
+            ENV_NAME=".env.staging"; BUNDLE="munni-deploy-iac-staging.tgz"; STAMP="VERSION_IAC_STAGING"
+          fi
+          bash deploy/nas/render-env.sh "$SRC/.env.${{ matrix.stack }}" "$STAGE/$ENV_NAME"
+          tar -czf "$RUNNER_TEMP/$BUNDLE" -C "$STAGE" .
+          echo "${{ github.sha }}" > "$RUNNER_TEMP/$STAMP"
+          echo "bundle=$BUNDLE" >> "$GITHUB_OUTPUT"
+          echo "stamp=$STAMP" >> "$GITHUB_OUTPUT"
+        env:
+          IAC_DOMAIN: ${{ secrets.IAC_DOMAIN }}
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+          VARS_JSON: ${{ toJSON(vars) }}
+      - name: Upload to Synology FileStation (bundle first, stamp last)
+        run: |
+          bash deploy/nas/upload.sh \
+            "$RUNNER_TEMP/${{ steps.bundle.outputs.bundle }}" \
+            "$RUNNER_TEMP/${{ steps.bundle.outputs.stamp }}"
+        env:
+          SYNOLOGY_URL: ${{ secrets.SYNOLOGY_URL }}
+          SYNOLOGY_USER: ${{ secrets.SYNOLOGY_USER }}
+          SYNOLOGY_PASS: ${{ secrets.SYNOLOGY_PASS }}
+          SYNOLOGY_PATH: ${{ secrets.SYNOLOGY_PATH }}

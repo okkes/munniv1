@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>aps-environment</key>
+	<string>production</string>
+	<!-- ONE domain per channel: claiming both let the prod app answer
+	     universal links on the dev domain ("open in munni" on munni dev
+	     logins). The dev rebrand step swaps this to the test domain. -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:munni.okkes.synology.me</string>
+	</array>
+</dict>
+</plist>

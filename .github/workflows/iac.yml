@@ -1,0 +1,98 @@
+name: IaC bootstrap
+
+# Runs infra/bootstrap.mjs for a stack in CI (user ruling: IaC lives in
+# GitHub Actions, not on anyone's machine). Manual dispatch per stack;
+# also re-verifies both stacks whenever infra/ changes on dev.
+on:
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: 'Stack to bootstrap'
+        required: true
+        type: choice
+        options: [munni-iac-prod, munni-iac-staging]
+      verify_only:
+        description: 'Only verify (no writes)'
+        type: boolean
+        default: false
+      rotate:
+        description: 'Comma-separated generated secrets to re-mint (--rotate)'
+        type: string
+        default: ''
+  push:
+    branches: [dev]
+    paths: ['infra/**', '.github/workflows/iac.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    # first-boot latch: fresh repo copies skip every run until the
+    # wizard marks the repo initialized (variable MUNNI_INITIALIZED)
+    if: ${{ vars.MUNNI_INITIALIZED == 'true' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        stack: ${{ github.event_name == 'push' && fromJSON('["munni-iac-prod","munni-iac-staging"]') || fromJSON(format('["{0}"]', inputs.stack)) }}
+    # the stack's environment carries its minted secrets + the pair's
+    # Logto infra credential
+    environment: ${{ matrix.stack == 'munni-iac-prod' && 'iac-production' || 'iac-staging' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Infra module tests
+        # quoted: node expands the glob itself (a dir arg is not portable)
+        run: node --test "infra/tests/**/*.test.mjs"
+      - name: Bootstrap / verify
+        # pushes to dev VERIFY (no writes); manual dispatch APPLIES unless
+        # verify_only is ticked. Output lands in the run's step summary so
+        # the setup wizard can point straight at it.
+        run: |
+          set -o pipefail
+          MODE_FLAG=""
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.verify_only }}" = "true" ]; then
+            MODE_FLAG="--verify"
+          fi
+          ROTATE_FLAG=""
+          if [ -n "${{ inputs.rotate }}" ] && [ -z "$MODE_FLAG" ]; then
+            ROTATE_FLAG="--rotate ${{ inputs.rotate }}"
+          fi
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          rc=0
+          node infra/bootstrap.mjs --stack "${{ matrix.stack }}" $MODE_FLAG $ROTATE_FLAG 2>&1 \
+            | tee -a "$GITHUB_STEP_SUMMARY" || rc=$?
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -ne 0 ]; then
+            if [ -n "$MODE_FLAG" ]; then
+              echo "::warning::verify reported gaps (expected until the runbook's manual steps are done)"
+              exit 0
+            fi
+            exit $rc
+          fi
+        env:
+          # gh in bootstrap needs a token that can manage environments +
+          # secrets — GITHUB_TOKEN cannot; the operator provides IAC_GH_PAT
+          # (fine-grained: administration + secrets + variables, this repo)
+          GH_TOKEN: ${{ secrets.IAC_GH_PAT || secrets.GITHUB_TOKEN }}
+          IAC_DOMAIN: ${{ secrets.IAC_DOMAIN }}
+          IAC_LOGTO_INFRA_M2M_ID: ${{ secrets.IAC_LOGTO_INFRA_M2M_ID }}
+          IAC_LOGTO_INFRA_M2M_SECRET: ${{ secrets.IAC_LOGTO_INFRA_M2M_SECRET }}
+          IAC_GLITCHTIP_API_TOKEN: ${{ secrets.IAC_GLITCHTIP_API_TOKEN }}
+          LOGTO_GOOGLE_CLIENT_ID: ${{ secrets.LOGTO_GOOGLE_CLIENT_ID }}
+          LOGTO_GOOGLE_CLIENT_SECRET: ${{ secrets.LOGTO_GOOGLE_CLIENT_SECRET }}
+          LOGTO_APPLE_CLIENT_ID: ${{ secrets.LOGTO_APPLE_CLIENT_ID }}
+          LOGTO_APPLE_TEAM_ID: ${{ secrets.LOGTO_APPLE_TEAM_ID }}
+          LOGTO_APPLE_KEY_ID: ${{ secrets.LOGTO_APPLE_KEY_ID }}
+          LOGTO_APPLE_PRIVATE_KEY: ${{ secrets.LOGTO_APPLE_PRIVATE_KEY }}
+          SYNOLOGY_URL: ${{ secrets.SYNOLOGY_URL }}
+          SYNOLOGY_USER: ${{ secrets.SYNOLOGY_USER }}
+          SYNOLOGY_PASS: ${{ secrets.SYNOLOGY_PASS }}
+      - name: Upload rendered stack + runbook
+        uses: actions/upload-artifact@v7
+        with:
+          name: iac-${{ matrix.stack }}-${{ github.run_number }}
+          path: infra/rendered/${{ matrix.stack }}/
+          retention-days: 30

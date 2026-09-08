@@ -1,0 +1,8 @@
+# Files that run on Linux (NAS, containers, CI) must keep LF even when
+# checked out on Windows — CRLF in shell/env files breaks bash ($'\r').
+*.sh text eol=lf
+deploy/** text eol=lf
+deploy/env/* text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Dockerfile* text eol=lf

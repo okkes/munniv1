@@ -1,0 +1,27 @@
+{
+  "name": "munni-monorepo",
+  "version": "2.27.0",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/admin",
+    "apps/control",
+    "apps/native"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @munni/web",
+    "build": "npm run build -w @munni/web",
+    "test": "npm test -w @munni/web",
+    "gallery": "npm run gallery -w @munni/web",
+    "deps:check": "npm outdated --workspaces --include-workspace-root",
+    "deps:check:server": "cd server && dotnet tool restore && dotnet dotnet-outdated",
+    "deps:update": "npx npm-check-updates --workspaces --root -t minor -u && npm install",
+    "postinstall": "patch-package || exit 0"
+  },
+  "volta": {
+    "node": "24.18.1"
+  },
+  "devDependencies": {
+    "patch-package": "^8.0.1"
+  }
+}
