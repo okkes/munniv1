@@ -11,6 +11,15 @@ name: Mint Apple signing certificate
 
 on:
   workflow_dispatch:
+    inputs:
+      environment:
+        # the wizard's local track keeps its store credentials in the
+        # GitHub environment `local` — the job must run INSIDE it to see
+        # them (repository-level secrets stay visible either way)
+        description: 'GitHub environment carrying ASC_KEY_* + APPLE_DEV_CERT_PASSWORD (repo-level secrets work with any)'
+        required: false
+        type: string
+        default: 'local'
 
 permissions:
   contents: read
@@ -22,6 +31,7 @@ jobs:
     # ever becomes a secret (the ubuntu/OpenSSL-3 attempt shipped a p12
     # that `security import` rejected)
     runs-on: macos-26
+    environment: ${{ inputs.environment || 'local' }}
     steps:
       - uses: actions/checkout@v7
 
