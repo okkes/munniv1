@@ -1,0 +1,81 @@
+# munni STAGING stack (dev branch images) for the Synology NAS.
+# Runs beside production with its own database; shares the production
+# Logto + GlitchTip containers to keep NAS RAM in check (register a
+# separate Logto SPA app for the munni-test origin).
+#
+# DSM reverse proxy:
+#   munni-test.<your-domain>      -> localhost:8095
+#   munni-test-api.<your-domain>  -> localhost:8096
+#
+# Env: .env.staging (rendered by CI from the staging GitHub Environment;
+# falls back to the production .env when absent).
+# Update via:  bash update.sh docker-compose.staging.yml
+name: munni-staging
+services:
+  web:
+    image: ${REGISTRY:-ghcr.io/okkes}/munni-web:dev
+    restart: unless-stopped
+    ports:
+      - "8095:80"
+
+  api:
+    image: ${REGISTRY:-ghcr.io/okkes}/munni-api:dev
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Db: Host=postgres;Database=munni;Username=munni;Password=${POSTGRES_PASSWORD}
+      Db__AutoMigrate: "true"
+      Auth__Authority: https://logto.${DOMAIN}/oidc
+      Auth__Audience: https://munni-test-api.${DOMAIN}
+      Cors__Origins__0: https://munni-test.${DOMAIN}
+      # native staging shells (app.munni.dev): Android WebView / iOS WKWebView
+      Cors__Origins__1: https://localhost
+      Cors__Origins__2: capacitor://localhost
+      GoCardless__SecretId: ${GOCARDLESS_SECRET_ID}
+      GoCardless__SecretKey: ${GOCARDLESS_SECRET_KEY}
+      Push__VapidPublicKey: ${PUSH_VAPID_PUBLIC_KEY:-}
+      Push__VapidPrivateKey: ${PUSH_VAPID_PRIVATE_KEY:-}
+      Push__Subject: ${PUSH_VAPID_SUBJECT:-mailto:admin@localhost}
+      # native pushes for the staging app (app.munni.dev, same Firebase project)
+      Fcm__ServiceAccountJson: ${FCM_SERVICE_ACCOUNT_JSON:-}
+      Logos__SecretKey: ${LOGODEV_SECRET_KEY:-}
+      Logos__PublicToken: ${LOGODEV_PUBLIC_TOKEN:-}
+      Admin__Subs: ${ADMIN_SUBS:-}
+      Sentry__Dsn: ${API_SENTRY_DSN:-}
+      # account deletion needs the Logto Management API (M2M app)
+      Logto__M2mAppId: ${LOGTO_M2M_APP_ID:-}
+      Logto__M2mAppSecret: ${LOGTO_M2M_APP_SECRET:-}
+      # staging and production share ONE Logto — a staging account deletion
+      # must never destroy the identity the production app still uses
+      Logto__DeleteIdentityOnAccountDeletion: "false"
+      Ocr__BaseUrl: http://ocr:8884
+      BUILD_NUMBER: dev
+    ports:
+      - "8096:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # receipt-photo OCR sidecar — stateless, internal-only (same as production)
+  ocr:
+    image: hertzg/tesseract-server:latest
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: munni
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: munni
+    volumes:
+      - pgdata18_staging:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U munni"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata_staging:
+  pgdata18_staging:

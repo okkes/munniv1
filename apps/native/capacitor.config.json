@@ -1,0 +1,21 @@
+{
+  "appId": "app.munni",
+  "appName": "munni",
+  "webDir": "../web/dist",
+  "android": {
+    "adjustMarginsForEdgeToEdge": "disable"
+  },
+  "plugins": {
+    "Keyboard": {
+      "resize": "native"
+    },
+    "PushNotifications": {
+      "presentationOptions": ["badge", "sound", "alert"]
+    },
+    "CapacitorSQLite": {
+      "iosIsEncryption": true,
+      "iosKeychainPrefix": "munni",
+      "androidIsEncryption": true
+    }
+  }
+}

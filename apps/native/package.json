@@ -1,0 +1,30 @@
+{
+  "name": "@munni/native",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Capacitor shell for the munni Android/iOS apps (docs/native-apps-design.md). The UI is apps/web, built and bundled into the binary.",
+  "scripts": {
+    "sync": "npm run build -w @munni/web && npx cap sync",
+    "open:android": "npx cap open android",
+    "open:ios": "npx cap open ios"
+  },
+  "dependencies": {
+    "@capacitor-community/sqlite": "^8.1.0",
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/camera": "^8.2.1",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/ios": "^8.4.2",
+    "@capacitor/keyboard": "^8.0.5",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/push-notifications": "^8.1.2",
+    "@capacitor/share": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.3",
+    "@capgo/capacitor-native-biometric": "^8.6.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.2"
+  }
+}

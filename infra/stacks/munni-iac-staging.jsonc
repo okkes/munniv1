@@ -1,0 +1,44 @@
+// munni-iac-staging — the staging twin. Reuses the PAIR's shared
+// services (Logto, GlitchTip) from munni-iac-prod, exactly like the
+// real staging rides the real prod's instances. Never touches the
+// existing stacks.
+{
+  "stack": "munni-iac-staging",
+  "pair": "munni-iac",
+  "role": "staging",
+  "channel": "dev",
+  "githubEnvironment": "iac-staging",
+
+  "domain": "${IAC_DOMAIN}",
+  "hosts": {
+    "web": "munni-iac-test",
+    "api": "munni-iac-test-api",
+    "admin": "munni-iac-test-admin",
+    // shared with the prod twin (pair-level services)
+    "logto": "logto-iac",
+    "logtoAdmin": "logto-iac-admin",
+    "glitchtip": "glitchtip-iac"
+  },
+
+  "ports": {
+    "web": 8295,
+    "admin": 8296,
+    "api": 8297
+  },
+
+  "sharedServices": false, // rides munni-iac-prod's logto/glitchtip
+  "registry": "ghcr.io/okkes",
+
+  "native": {
+    "appId": "app.munni.iac.dev",
+    "label": "munni iac dev",
+    "scheme": "munni-iac-dev"
+  },
+
+  "features": {
+    "telemetry": true, // reports INTO the pair's glitchtip
+    "importWatch": false,
+    "pgadmin": false,
+    "dbBackup": false
+  }
+}

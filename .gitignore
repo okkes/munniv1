@@ -1,0 +1,47 @@
+node_modules/
+dist/
+.vite/
+playwright-report/
+
+# Playwright artifacts: screenshots are committed (visual review),
+# videos/results/gallery HTML are regenerated and cached in CI.
+**/tests/gallery/
+**/tests/results/
+**/tests/videos/
+
+# Secrets: real env files never enter git — only templates do
+# (.env.example placeholders, .env.nas = CI-rendered placeholder template).
+.env
+.env.*
+!.env.example
+!.env.nas
+# IaC placeholder templates (NAS_* placeholders, no secret values)
+!.env.munni-iac-*
+**/env/.env
+**/env/.env.*
+!**/env/.env.example
+!**/env/.env.nas
+# Android upload keystore (lives in repo secrets + this local copy)
+*.keystore
+bin/
+obj/
+**/coverage/
+*.scratch.test.ts
+
+# SonarScanner for .NET working files
+server/.sonarqube/
+
+# local tool state and artifacts
+test-results/
+.claude/
+.codex/
+temporary/
+**/TestResults/
+import-watch/
+*.stackdump
+**/env/sonar-admin-password.txt
+
+# user's local scratch + raw Mina art pack (repo-root only — must NOT
+# swallow src/features/mina)
+/temp/
+/mina/

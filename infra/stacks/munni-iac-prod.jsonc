@@ -1,0 +1,50 @@
+// munni-iac-prod — the production twin of the IaC proof pair.
+// Owns the pair's shared services (Logto, GlitchTip), mirroring how the
+// real prod stack carries them for staging. NOTHING here may point at
+// the existing prod/staging stacks.
+{
+  "stack": "munni-iac-prod",
+  "pair": "munni-iac",
+  "role": "prod", // prod twin carries logto + glitchtip for the pair
+  "channel": "latest", // image tag channel (same registry, same images)
+  "githubEnvironment": "iac-production",
+
+  "domain": "${IAC_DOMAIN}",
+  "hosts": {
+    "web": "munni-iac",
+    "api": "munni-iac-api",
+    "admin": "munni-iac-admin",
+    "logto": "logto-iac",
+    "logtoAdmin": "logto-iac-admin",
+    "glitchtip": "glitchtip-iac"
+  },
+
+  // host ports — 82xx block, far from the live stacks (8090s) and
+  // staging (8190s per deploy/docker-compose.staging.yml)
+  "ports": {
+    "web": 8290,
+    "admin": 8291,
+    "api": 8292,
+    "logto": 3101,
+    "logtoAdmin": 3102,
+    "glitchtip": 8293
+  },
+
+  "sharedServices": true, // renders logto + glitchtip + valkey here
+  "registry": "ghcr.io/okkes",
+
+  // native twin apps for the first-time runbook (store uploads are the
+  // documented manual step; ids must differ from app.munni/app.munni.dev)
+  "native": {
+    "appId": "app.munni.iac",
+    "label": "munni iac",
+    "scheme": "munni-iac"
+  },
+
+  "features": {
+    "telemetry": true, // glitchtip lives in this stack
+    "importWatch": false,
+    "pgadmin": false,
+    "dbBackup": true
+  }
+}
