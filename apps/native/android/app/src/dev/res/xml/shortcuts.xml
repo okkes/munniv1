@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- dev-flavor override: same shortcuts, staging package + scheme -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="review"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_review">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="munni-dev://review"
+            android:targetPackage="app.munni.dev"
+            android:targetClass="app.munni.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="transactions"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_transactions">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="munni-dev://transactions"
+            android:targetPackage="app.munni.dev"
+            android:targetClass="app.munni.MainActivity" />
+    </shortcut>
+</shortcuts>

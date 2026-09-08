@@ -1,0 +1,330 @@
+@import 'tailwindcss';
+
+/* dark: variant follows the data-theme attribute, not the OS */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/*
+ * Semantic design tokens. Components use these (via Tailwind classes below or
+ * var(--m-*)) — never raw hex values. Palette ported from the legacy app
+ * (apps/legacy/src/app/theme.jsx) with a warm-dark counterpart.
+ */
+:root {
+  --m-bg: #f7f4ee;
+  --m-bg-2: #efeae0;
+  --m-surface: #ffffff;
+  --m-ink: #1b1a17;
+  --m-ink-2: #3d3a33;
+  --m-ink-3: #6b6558;
+  --m-ink-4: #9a9384;
+  --m-line: #e2dcce;
+  --m-line-2: #efeae0;
+
+  --m-brand: #08372b;
+  --m-on-brand: #f7f4ee;
+  --m-accent: #4a6a4f; /* sage */
+  --m-accent-deep: #2f4a33;
+  --m-accent-soft: #dde6da;
+
+  --m-negative: #b5503a; /* clay */
+  --m-negative-soft: #f2ddd3;
+  --m-warning: #a8782b; /* ochre */
+  --m-warning-soft: #f0e2c2;
+  --m-info: #3f4e63; /* slate */
+  --m-info-soft: #dde2ea;
+  --m-special: #5e4a78; /* violet */
+  --m-special-soft: #e3dced;
+}
+
+[data-theme='dark'] {
+  --m-bg: #191714;
+  --m-bg-2: #201e1a;
+  --m-surface: #262420;
+  --m-ink: #f0ede6;
+  --m-ink-2: #d3cec2;
+  --m-ink-3: #a49d8e;
+  --m-ink-4: #7a7466;
+  --m-line: #383530;
+  --m-line-2: #2e2b26;
+
+  --m-brand: #6fae97;
+  --m-on-brand: #10231d;
+  --m-accent: #7da584;
+  --m-accent-deep: #a3c4a8;
+  --m-accent-soft: #27352a;
+
+  --m-negative: #d4715a;
+  --m-negative-soft: #3c2620;
+  --m-warning: #c99b4e;
+  --m-warning-soft: #3a2f1b;
+  --m-info: #8fa3bf;
+  --m-info-soft: #262e3a;
+  --m-special: #a58cc4;
+  --m-special-soft: #332b3e;
+}
+
+@theme inline {
+  --color-bg: var(--m-bg);
+  --color-bg-2: var(--m-bg-2);
+  --color-surface: var(--m-surface);
+  --color-ink: var(--m-ink);
+  --color-ink-2: var(--m-ink-2);
+  --color-ink-3: var(--m-ink-3);
+  --color-ink-4: var(--m-ink-4);
+  --color-line: var(--m-line);
+  --color-line-2: var(--m-line-2);
+  --color-brand: var(--m-brand);
+  --color-on-brand: var(--m-on-brand);
+  --color-accent: var(--m-accent);
+  --color-accent-deep: var(--m-accent-deep);
+  --color-accent-soft: var(--m-accent-soft);
+  --color-negative: var(--m-negative);
+  --color-negative-soft: var(--m-negative-soft);
+  --color-warning: var(--m-warning);
+  --color-warning-soft: var(--m-warning-soft);
+  --color-info: var(--m-info);
+  --color-info-soft: var(--m-info-soft);
+  --color-special: var(--m-special);
+  --color-special-soft: var(--m-special-soft);
+
+  --font-ui: 'Inter Variable', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-display: 'Source Serif 4 Variable', Georgia, serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+  --font-brand: 'Comfortaa Variable', 'Inter Variable', sans-serif;
+
+  --radius-card: 16px;
+  --radius-btn: 14px;
+  --radius-input: 12px;
+}
+
+@layer base {
+  * {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  *::-webkit-scrollbar {
+    display: none;
+  }
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+    /* also on html: iOS standalone paints OS bands (home indicator area)
+       with the root background — white default reads as a broken footer */
+    background: var(--m-bg);
+  }
+  body {
+    background: var(--m-bg);
+    color: var(--m-ink);
+    font-family: var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* fixed app frame: the document itself can never scroll, so the bottom
+     tab bar is always visible (Android URL-bar dance, iOS standalone). All
+     scrolling happens inside designated containers.
+
+     inset:0 ONLY — no viewport-unit heights. 100dvh here hid the tab bar
+     entirely behind Android's system navigation in the installed PWA
+     (dvh included the nav-bar band the system draws over). iOS keeps the
+     dvh sizing below, scoped to WebKit, where it cures the dead band
+     under the tab bar without touching Android. */
+  #root {
+    position: fixed;
+    inset: 0;
+  }
+  @supports (-webkit-touch-callout: none) {
+    /* iOS/iPadOS only: dvh itself proved wrong on iPhones (a dead band
+       stayed under the tab bar), so the app frame takes the measured
+       innerHeight that pwa.ts mirrors into --vvh on every resize */
+    #root {
+      height: var(--vvh, 100dvh);
+    }
+    /* standalone no longer needs a special case: without
+       black-translucent (index.html) the webview starts below the status
+       bar and the measured viewport reaches the true glass bottom */
+  }
+  /* prevent iOS zoom-on-focus */
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+  button {
+    font-family: inherit;
+  }
+}
+
+@layer components {
+  .m-h1 {
+    font-family: var(--font-display);
+    font-size: 32px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+  .m-h2 {
+    font-family: var(--font-display);
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.15;
+  }
+  .m-h3 {
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .m-num {
+    font-family: var(--font-display);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  /* sheet-gesture plan RC1 (2026-07-24): on touch devices, long-press
+     text selection STARTS a selection that fights every sheet drag —
+     and hold-to-copy is
+     unwanted on most UI text anyway (user ruling). Opt back in with
+     `select-text` exactly where copying matters (IDs, IBANs, bank text).
+     Inputs keep native selection; desktop (fine pointers) is untouched. */
+  @media (pointer: coarse) {
+    body {
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    input,
+    textarea,
+    [contenteditable] {
+      user-select: text;
+      -webkit-user-select: text;
+    }
+  }
+  .m-cap {
+    font-size: 11px;
+    color: var(--m-ink-3);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+  .m-tap {
+    cursor: pointer;
+    transition:
+      opacity 0.15s,
+      transform 0.1s;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .m-tap:active,
+  .m-tap[data-pressed] {
+    opacity: 0.7;
+    transform: scale(0.98);
+  }
+}
+
+@keyframes m-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.m-fade {
+  animation: m-fade-in 0.28s ease-out both;
+}
+
+/* chart entrances: bars rise, composition/progress bars sweep in */
+@keyframes m-bar-in {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+.m-bar-in {
+  animation: m-bar-in 0.45s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+@keyframes m-grow-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+.m-grow-x {
+  animation: m-grow-x 0.5s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .m-bar-in,
+  .m-grow-x,
+  .m-fade {
+    animation: none;
+  }
+  /* transitions collapse too — width/transform sweeps read as motion */
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* keyboard focus (redesign U5): a visible ring for tab users only —
+   touch and mouse never see it. Editable fields are EXCLUDED: unlike
+   buttons they match :focus-visible on plain touch focus too, which
+   painted a green ring on every tapped input and clipped awkwardly at
+   sheet edges (user rule 2026-07-28: the caret is the focus signal) */
+:where(button, a, [tabindex]):focus-visible {
+  outline: 2px solid var(--m-accent);
+  outline-offset: 2px;
+}
+
+/* review deck (user request): the confirmed/skipped card exits left,
+   the next one slides in from the right */
+@keyframes m-card-out {
+  to { transform: translateX(-120%) rotate(-4deg); opacity: 0; }
+}
+@keyframes m-card-in {
+  from { transform: translateX(110%); opacity: 0.4; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.m-card-out { animation: m-card-out 0.22s ease-in forwards; }
+.m-card-in { animation: m-card-in 0.24s ease-out; }
+
+/* detail pane arrival in the master-detail layout */
+@keyframes m-pane-in {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: none; }
+}
+.m-pane-in { animation: m-pane-in 0.2s ease-out; }
+
+/* press-and-hold affordance: a highlight grows under the finger while
+   the hold timer runs (450ms, matching the menu threshold) */
+@keyframes m-hold-grow {
+  from { transform: scaleX(0); opacity: 0.55; }
+  to { transform: scaleX(1); opacity: 1; }
+}
+.m-holding::before {
+  content: '';
+  position: absolute;
+  inset: -4px -8px;
+  border-radius: 12px;
+  background: var(--m-bg-2);
+  transform-origin: left center;
+  animation: m-hold-grow 0.45s linear forwards;
+  z-index: -1;
+}
+
+/* Mina tutorial: the target breathes in the brand mint — a wave of
+   light instead of a heavy dim (user design ruling) */
+@keyframes m-mina-glow {
+  0%, 100% { box-shadow: 0 0 4px 1px color-mix(in srgb, var(--m-accent) 45%, transparent), 0 0 0 2px var(--m-accent); }
+  50% { box-shadow: 0 0 24px 9px color-mix(in srgb, var(--m-accent) 85%, transparent), 0 0 0 2px var(--m-accent); }
+}
+.m-mina-glow { animation: m-mina-glow 1.6s ease-in-out infinite; }
+/* info-only highlight: a soft steady glow — noticeable, clearly not a
+   button to press (user ruling: two kinds of attention) */
+.m-mina-glow-soft { box-shadow: 0 0 10px 2px color-mix(in srgb, var(--m-accent) 40%, transparent), 0 0 0 1.5px color-mix(in srgb, var(--m-accent) 60%, transparent); }

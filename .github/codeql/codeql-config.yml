@@ -1,0 +1,10 @@
+name: munni CodeQL config
+
+# CodeQL runs for SECURITY. Code QUALITY is already enforced by SonarQube
+# (kept at 0 open issues across web/api/admin), ESLint, and the Roslyn
+# analyzers — so we use the security-extended suite (a superset of the
+# security queries, stronger on real vulnerabilities) instead of
+# security-and-quality, which only duplicated those tools with
+# informational style notes.
+queries:
+  - uses: security-extended

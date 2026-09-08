@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">munni</string>
+    <string name="title_activity_main">munni</string>
+    <string name="package_name">app.munni</string>
+    <string name="custom_url_scheme">app.munni</string>
+    <string name="shortcut_review">Review</string>
+    <string name="shortcut_transactions">Transactions</string>
+</resources>

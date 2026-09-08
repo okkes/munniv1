@@ -1,0 +1,40 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Replaces dependabot once the Mend Renovate GitHub App is installed on the repo. Mirrors the old cadence (weekly, grouped minor+patch, PRs against dev — memory rule: test locally on dev before merging) and adds what dependabot lacked: Gradle (android), CocoaPods (ios), the dependency dashboard issue, and lockfile maintenance.",
+  "extends": ["config:recommended", ":dependencyDashboard"],
+  "baseBranches": ["dev"],
+  "schedule": ["before 6am on monday"],
+  "timezone": "Europe/Amsterdam",
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 5,
+  "semanticCommits": "enabled",
+  "lockFileMaintenance": { "enabled": true, "schedule": ["before 6am on the first day of the month"] },
+  "packageRules": [
+    {
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "npm minor & patch"
+    },
+    {
+      "matchManagers": ["nuget"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "nuget minor & patch"
+    },
+    {
+      "matchManagers": ["gradle"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "android minor & patch"
+    },
+    {
+      "matchManagers": ["cocoapods"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "ios pods minor & patch"
+    },
+    {
+      "description": "majors stay individual PRs — release-notes check for required code changes is part of the merge procedure",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    }
+  ],
+  "vulnerabilityAlerts": { "enabled": true }
+}

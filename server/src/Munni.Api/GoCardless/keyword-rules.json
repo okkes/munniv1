@@ -1,0 +1,1222 @@
+[
+ {
+  "lang": "nl",
+  "catId": "reimburse",
+  "keywords": [
+   "terugbetaling",
+   "tikkie",
+   "betaalverzoek"
+  ],
+  "direction": "credit",
+  "txType": "income"
+ },
+ {
+  "lang": "nl",
+  "catId": "salary",
+  "keywords": [
+   "salaris",
+   "loon",
+   "werkgever",
+   "uitbetaling"
+  ],
+  "direction": "credit",
+  "txType": "income"
+ },
+ {
+  "lang": "nl",
+  "catId": "freelance",
+  "keywords": [
+   "freelance",
+   "zzp"
+  ],
+  "direction": "credit",
+  "txType": "income"
+ },
+ {
+  "lang": "nl",
+  "catId": "rental",
+  "keywords": [
+   "huur",
+   "verhuur",
+   "huurinkomsten"
+  ],
+  "direction": "credit",
+  "txType": "income"
+ },
+ {
+  "lang": "nl",
+  "catId": "investIncome",
+  "keywords": [
+   "dividend",
+   "rente",
+   "beleggen",
+   "beleggingen"
+  ],
+  "direction": "credit",
+  "txType": "income"
+ },
+ {
+  "lang": "nl",
+  "catId": "housingRent",
+  "keywords": [
+   "hypotheek",
+   "huur",
+   "huurtoeslag",
+   "huurverhoging",
+   "huurcontract",
+   "huurwoning",
+   "huurhuis",
+   "huurprijs",
+   "huurachterstand",
+   "huurverlaging",
+   "onroerendezaakbelasting",
+   "ozb",
+   "woz-waarde"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "housingUtility",
+  "keywords": [
+   "gas",
+   "water",
+   "licht",
+   "energie",
+   "stroom",
+   "waterverbruik",
+   "watermeter",
+   "waterrekening",
+   "waterprijs",
+   "waterkosten",
+   "waterbedrijf",
+   "eneco",
+   "essent",
+   "nuon",
+   "oxxio",
+   "vattenfall",
+   "energieleverancier",
+   "energierekening",
+   "energieprijs",
+   "energiekosten"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "housingMaintenance",
+  "keywords": [
+   "feenstra",
+   "loodgieter",
+   "warmteservice",
+   "kewodak"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "housingStorage",
+  "keywords": [
+   "opslagruimte",
+   "self-storage",
+   "shurgard",
+   "allsafe",
+   "boxie24",
+   "mijnsafestore",
+   "kubox"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "transportCar",
+  "keywords": [
+   "autoonderdelen",
+   "halfords",
+   "automaterialen",
+   "winparts",
+   "autodoc",
+   "apk",
+   "autoschade"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "parking",
+  "keywords": [
+   "parking",
+   "parkeren",
+   "parkmobile",
+   "q-park",
+   "interparking",
+   "p1 parking",
+   "yellowbrick",
+   "tolvrij",
+   "toll"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "bikes",
+  "keywords": [
+   "swapfiets",
+   "fietsenmaker",
+   "fietsenwinkel",
+   "fietsverhuur",
+   "gazelle",
+   "vanmoof",
+   "batavus",
+   "fietsservice"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "telecom",
+  "keywords": [
+   "kpn",
+   "odido",
+   "ziggo",
+   "vodafone",
+   "t-mobile",
+   "youfone",
+   "simyo",
+   "tele2",
+   "lebara",
+   "lycamobile",
+   "hollandsnieuwe",
+   "budget thuis",
+   "online.nl",
+   "caiway",
+   "delta fiber"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "transportFuel",
+  "keywords": [
+   "shell",
+   "esso",
+   "tango",
+   "texaco",
+   "avia",
+   "argos",
+   "gulf",
+   "q8",
+   "tinq",
+   "tankstation",
+   "tanken",
+   "benzine",
+   "diesel",
+   "lpg",
+   "brandstof",
+   "tankpas"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "transportPublic",
+  "keywords": [
+   "ns",
+   "ov-chipkaart",
+   "ov",
+   "trein",
+   "bus",
+   "tram",
+   "metro",
+   "connexxion",
+   "arriva",
+   "veolia",
+   "gvb",
+   "ret",
+   "htm",
+   "qbuzz",
+   "syntus",
+   "breng",
+   "ebs",
+   "keolis",
+   "ov-fiets",
+   "taxi",
+   "taxibedrijf",
+   "taxicentrale",
+   "taxichauffeur",
+   "taxi-app",
+   "uber"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "groceries",
+  "keywords": [
+   "jumbo",
+   "lidl",
+   "plus",
+   "dirk",
+   "spar",
+   "coop",
+   "hoogvliet",
+   "ekoplaza",
+   "jan linders",
+   "supermarkt",
+   "boodschappen",
+   "aldi",
+   "albert heijn",
+   "picnic",
+   "getir",
+   "cermefood"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "breakfast",
+  "keywords": [
+   "ontbijt",
+   "brunch",
+   "bakkerij",
+   "subway",
+   "la place",
+   "bagels",
+   "anne&max",
+   "dunkin",
+   "firin",
+   "lunch"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "restaurants",
+  "keywords": [
+   "restaurant",
+   "bistro",
+   "brasserie",
+   "burgerbar",
+   "vapiano",
+   "librije",
+   "bord'eau",
+   "vinkeles",
+   "ciel bleu",
+   "mossel&gin",
+   "zarzo",
+   "bolenius",
+   "dozo",
+   "momiji",
+   "sushi"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "takeout",
+  "keywords": [
+   "mcdonald's",
+   "burger king",
+   "kfc",
+   "domino's",
+   "thuisbezorgd",
+   "deliveroo",
+   "uber eats",
+   "foodora",
+   "eazie",
+   "hfc hobbemaplein",
+   "cigkoftem"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "sweets",
+  "keywords": [
+   "jamin",
+   "baklava",
+   "patisserie",
+   "snackbar"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "alcohol",
+  "keywords": [
+   "bier",
+   "wijn",
+   "sterke drank",
+   "slijterij",
+   "gall & gall",
+   "dirck iii",
+   "mitra",
+   "drankgigant",
+   "drankdozijn",
+   "drank.nl",
+   "drankoutlet",
+   "de jongens"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "tobacco",
+  "keywords": [
+   "sigaretten",
+   "shag",
+   "tabak",
+   "rookwaren",
+   "coffeeshop",
+   "tabakszaak",
+   "primera"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "coffee",
+  "keywords": [
+   "starbucks",
+   "espresso",
+   "coffee",
+   "kiosk",
+   "koffie",
+   "nespresso",
+   "douwe egberts",
+   "senseo"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "haircut",
+  "keywords": [
+   "barber",
+   "kapper",
+   "kapsalon",
+   "hairstylist",
+   "schorem",
+   "toni&guy"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "toiletry",
+  "keywords": [
+   "etos",
+   "shampoo",
+   "douchegel",
+   "zeep",
+   "deodorant",
+   "tandpasta",
+   "tandenborstel",
+   "kruidvat",
+   "drogist"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "beautyProduct",
+  "keywords": [
+   "parfum",
+   "bono",
+   "douglas",
+   "parfumerie",
+   "make-up",
+   "lippenstift",
+   "mascara",
+   "oogschaduw",
+   "foundation",
+   "schoonheidssalon"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "movie",
+  "keywords": [
+   "pathe",
+   "cineville",
+   "cinemec",
+   "cinema",
+   "bioscoop",
+   "videoland",
+   "pathe thuis"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "concerts",
+  "keywords": [
+   "concert",
+   "festival",
+   "theater",
+   "musical",
+   "opera",
+   "ahoy",
+   "tivolivredenburg",
+   "carré",
+   "paradiso",
+   "melkweg",
+   "doornroosje",
+   "013",
+   "effenaar",
+   "patronaat",
+   "oosterpoort",
+   "de vereeniging",
+   "de vorstin",
+   "de helling"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "sportingEvent",
+  "keywords": [
+   "voetbalwedstrijd",
+   "stadium",
+   "stadion",
+   "feijenoord",
+   "arena",
+   "kuip",
+   "kyocera",
+   "adelaarshorst",
+   "de goffert",
+   "snowworld"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "gambling",
+  "keywords": [
+   "casino",
+   "gokken",
+   "gokkast",
+   "poker",
+   "blackjack",
+   "roulette",
+   "holland casino"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "hobby",
+  "keywords": [
+   "kaartenspel",
+   "bordspel",
+   "audiobook",
+   "schilderen",
+   "hobby",
+   "hobbies",
+   "vrijetijdsbesteding",
+   "cardmarket",
+   "magic: the gathering",
+   "yu-gi-oh!",
+   "pokémon",
+   "bordspellenwinkel",
+   "intertoys",
+   "bart smit",
+   "toychamp",
+   "spellenhuis",
+   "spellenwinkel",
+   "spellenvariant",
+   "spellenrijk",
+   "audible",
+   "storytel",
+   "luisterrijk",
+   "luisterboeken",
+   "manga",
+   "stripboek"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "videoGame",
+  "keywords": [
+   "computerspel",
+   "xbox",
+   "playstation",
+   "nintendo",
+   "steam",
+   "game mania",
+   "nedgame",
+   "epic game",
+   "ubisoft",
+   "activision",
+   "bethesda",
+   "sony online entertainment",
+   "apple arcade",
+   "jagex"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "dating",
+  "keywords": [
+   "datenight",
+   "romantisch",
+   "valentijnsdag",
+   "trouwerij"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "subs",
+  "keywords": [
+   "netflix",
+   "disney+",
+   "spotify",
+   "apple music",
+   "tidal",
+   "deezer",
+   "youtube",
+   "twitch",
+   "plex",
+   "vimeo",
+   "apple tv+",
+   "itunes",
+   "iptv",
+   "ziggo go",
+   "npo start",
+   "rtl xl"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "entertainmentOther",
+  "keywords": [
+   "personeelsvereniging"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "gym",
+  "keywords": [
+   "sportschool",
+   "fitness",
+   "gym",
+   "crossfit",
+   "basic-fit",
+   "fitforfree",
+   "anytime fitness",
+   "healthcity",
+   "sportcity",
+   "trainmore",
+   "fit20",
+   "fitland"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "sportsEquipment",
+  "keywords": [
+   "sportkleding",
+   "voetbalschoenen",
+   "hardloopschoenen",
+   "sportwinkel",
+   "sportzaak",
+   "sportdirect",
+   "decathlon",
+   "perry sport",
+   "aktiesport",
+   "intersport",
+   "sport2000",
+   "sportsworld",
+   "blue tomato"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "clothing",
+  "keywords": [
+   "kleding",
+   "h&m",
+   "mango",
+   "zara",
+   "primark",
+   "vero moda",
+   "forever 21",
+   "bershka",
+   "g-star raw",
+   "jack & jones",
+   "bijenkorf",
+   "wehkamp",
+   "zalando",
+   "asos",
+   "zeeman",
+   "tommy hilfiger"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "electronics",
+  "keywords": [
+   "coolblue",
+   "mediamarkt",
+   "conrad",
+   "alternate",
+   "tweakers",
+   "bcc",
+   "paradigit",
+   "kijkshop",
+   "dixons",
+   "elektronica",
+   "electronics",
+   "gopro"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "homeGoods",
+  "keywords": [
+   "ikea",
+   "kwantum",
+   "karwei",
+   "gamma",
+   "praxis",
+   "jysk",
+   "xenos",
+   "action",
+   "blokker",
+   "hema",
+   "v&d",
+   "woonaccessoires"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "gift",
+  "keywords": [
+   "cadeau",
+   "gift"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "intimateUtility",
+  "keywords": [
+   "condoom",
+   "sextoy",
+   "pabo",
+   "easytoys",
+   "sexshop"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "festivity",
+  "keywords": [
+   "halloween",
+   "kerst",
+   "sinterklaas",
+   "pasen",
+   "koningsdag",
+   "bevrijdingsdag",
+   "moederdag",
+   "vaderdag",
+   "carnaval",
+   "oktoberfest"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "houseGarden",
+  "keywords": [
+   "tuin",
+   "tuinwinkel",
+   "intratuin"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "homeAutomation",
+  "keywords": [
+   "hashop",
+   "somfy",
+   "dedomoticastore",
+   "robbshop",
+   "smarthomesupply"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "childCare",
+  "keywords": [
+   "baby",
+   "prenatal"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "shoppingOther",
+  "keywords": [
+   "amazon",
+   "aliexpress",
+   "temu",
+   "alibaba"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "flight",
+  "keywords": [
+   "klm",
+   "transavia",
+   "schiphol",
+   "cheaptickets",
+   "vliegtickets",
+   "tix.nl",
+   "vueling",
+   "corendon",
+   "ryanair",
+   "easyjet",
+   "tuifly",
+   "d-reizen",
+   "momondo",
+   "skyscanner",
+   "vliegwinkel",
+   "wtc.nl",
+   "travelbird",
+   "paperflies"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "hotel",
+  "keywords": [
+   "booking.com",
+   "hotel",
+   "expedia.nl",
+   "trivago",
+   "airbnb",
+   "agoda"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "carRental",
+  "keywords": [
+   "europcar",
+   "avis",
+   "hertz",
+   "sunnycars",
+   "sixt",
+   "alamo",
+   "thrifty",
+   "cardelmar",
+   "easyterra",
+   "holidaycars",
+   "rentalcars",
+   "tui cars",
+   "autohuren"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "activity",
+  "keywords": [
+   "tripadvisor",
+   "viator",
+   "musement",
+   "city discovery"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "tuition",
+  "keywords": [
+   "duo",
+   "studiefinanciering",
+   "collegegeld"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "course",
+  "keywords": [
+   "cursus",
+   "training",
+   "opleiding",
+   "workshop",
+   "seminar",
+   "webinar",
+   "e-learning",
+   "coursera",
+   "udemy",
+   "universiteit"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "book",
+  "keywords": [
+   "studieboek",
+   "book depository",
+   "studystore",
+   "leesboek",
+   "boekenwinkel",
+   "boekhandel",
+   "kindle",
+   "kobo"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "schoolSupply",
+  "keywords": [
+   "schoolspullen",
+   "schooltas",
+   "schoolagenda",
+   "etui",
+   "schriften",
+   "kaftpapier",
+   "geodriehoek",
+   "rekenmachine",
+   "rugzak"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "certificate",
+  "keywords": [
+   "diploma",
+   "certificaat",
+   "getuigschrift",
+   "diplomering",
+   "certificering"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "newspaper",
+  "keywords": [
+   "nrc",
+   "volkskrant",
+   "telegraaf",
+   "trouw",
+   "parool",
+   "spits",
+   "depers"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "doctorVisit",
+  "keywords": [
+   "huisarts",
+   "dokter",
+   "fysiotherapeut",
+   "gezondheidscentrum",
+   "consultatiebureau"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "dental",
+  "keywords": [
+   "tandarts",
+   "orthodontist",
+   "mondzorg",
+   "ivoren kruis",
+   "parodontologie",
+   "dental",
+   "tandzorg"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "prescription",
+  "keywords": [
+   "apotheek",
+   "medicijnen",
+   "medicatie",
+   "geneesmiddelen",
+   "mediq",
+   "pharmeon"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "healthInsurance",
+  "keywords": [
+   "zorgverzekering",
+   "zilveren kruis",
+   "menzis",
+   "zorg en zekerheid",
+   "ditzo",
+   "ziezo",
+   "zorgdirect",
+   "ziektekostenverzekering"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "healthUtility",
+  "keywords": [
+   "vitamine"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "mentalCare",
+  "keywords": [
+   "psycholoog",
+   "therapeut",
+   "psychiater",
+   "headspace",
+   "psyned",
+   "mediteren"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "petFood",
+  "keywords": [
+   "kattenvoer",
+   "hondenbrokken",
+   "prins petfoods",
+   "versele-laga",
+   "smolke",
+   "royal canin",
+   "pedigree",
+   "whiskas",
+   "droogvoer",
+   "natvoer"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "petSupply",
+  "keywords": [
+   "dierenwinkel",
+   "dierenzaak",
+   "pets place",
+   "zooplus",
+   "max&luna",
+   "aquaplantsonline"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "petInsurance",
+  "keywords": [
+   "dierenverzekering",
+   "hondenverzekering",
+   "kattenverzekering",
+   "petplan",
+   "reaal dier & zorg"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "birthday",
+  "keywords": [
+   "yoursurprise",
+   "greetz",
+   "hallmark",
+   "verjaardag"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "funeralInsurance",
+  "keywords": [
+   "uitvaartverzekering",
+   "monuta",
+   "dela"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "charity",
+  "keywords": [
+   "rode kruis",
+   "kika",
+   "unicef",
+   "greenpeace",
+   "natuurmonumenten",
+   "kwf kankerbestrijding",
+   "hartstichting",
+   "donatie"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "taxes",
+  "keywords": [
+   "belastingdienst"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "fee",
+  "keywords": [
+   "oranjepakket",
+   "paspoort",
+   "creditcard",
+   "dyme"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "familyCare",
+  "keywords": [
+   "kinderopvang",
+   "gastouder",
+   "oppas",
+   "nanny",
+   "au pair",
+   "kinderdagverblijf",
+   "babysitter"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "cashWithdraw",
+  "keywords": [
+   "geldautomaat",
+   "geldopname",
+   "geldmaat"
+  ],
+  "direction": "debit",
+  "txType": "transfer"
+ },
+ {
+  "lang": "nl",
+  "catId": "fines",
+  "keywords": [
+   "boete",
+   "cjib"
+  ],
+  "direction": "debit",
+  "txType": "expense"
+ },
+ {
+  "lang": "nl",
+  "catId": "uncategorized",
+  "keywords": [
+   "doker",
+   "sahin",
+   "dufour",
+   "betaalverzoek",
+   "tikkie"
+  ],
+  "direction": "both",
+  "txType": "expense"
+ }
+]
