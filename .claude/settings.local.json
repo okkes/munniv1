@@ -1,0 +1,18 @@
+{
+  "env": {
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(Start-Process \"c:\\\\Users\\\\odoke\\\\Downloads\\\\munni \\(Copy\\)\\\\munni.html\")",
+      "PowerShell(Start-Process \"c:\\\\Users\\\\odoke\\\\Downloads\\\\munni \\(Copy\\)\\\\munni.html\")",
+      "PowerShell(python --version 2>&1)",
+      "PowerShell(node --version 2>&1)",
+      "Bash(Get-Item \"c:\\\\Users\\\\odoke\\\\Downloads\\\\munni \\(Copy\\)\\\\munni.html\")",
+      "Bash(Select-Object Name, Length, LastWriteTime)",
+      "PowerShell($f = Get-Item \"c:\\\\Users\\\\odoke\\\\Downloads\\\\munni \\(Copy\\)\\\\munni.html\"; Write-Output \"Name: $\\($f.Name\\)\"; Write-Output \"Size: $\\($f.Length\\) bytes\"; Write-Output \"Modified: $\\($f.LastWriteTime\\)\")",
+      "PowerShell($content = Get-Content \"c:\\\\Users\\\\odoke\\\\Downloads\\\\munni \\(Copy\\)\\\\munni.html\" -Raw; $scriptCount = \\([regex]::Matches\\($content, '<script type=\"text/babel\"'\\)\\).Count; Write-Output \"Inline babel script blocks: $scriptCount\"; $hasMount = $content -match 'createRoot'; Write-Output \"Has createRoot mount: $hasMount\"; $lastLines = $content -split \"`n\" | Select-Object -Last 5; $lastLines)",
+      "PowerShell($f = Get-Item \"c:\\\\Users\\\\odoke\\\\Downloads\\\\munni \\(Copy\\)\\\\munni.html\"; Write-Output \"Size: $\\($f.Length\\) bytes\")"
+    ]
+  }
+}
