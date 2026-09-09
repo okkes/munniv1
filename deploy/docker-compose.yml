@@ -97,7 +97,10 @@ services:
   logto:
     image: svhd/logto:1.42
     restart: unless-stopped
-    entrypoint: ["sh", "-c", "npm run alteration deploy latest || true; npm run cli db seed -- --swe && npm run alteration deploy latest && npm start"]
+    # seed FIRST: alteration-before-seed on an empty db half-creates tables
+    # and seed --swe then skips forever (RLS crash-loop; incident 2026-08-26).
+    # No-op change for this long-seeded db — it protects fresh installs.
+    entrypoint: ["sh", "-c", "npm run cli db seed -- --swe && npm run alteration deploy latest && npm start"]
     environment:
       TRUST_PROXY_HEADER: "1"
       DB_URL: postgres://munni:${POSTGRES_PASSWORD}@postgres:5432/logto
