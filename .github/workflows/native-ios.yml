@@ -217,9 +217,11 @@ jobs:
       # A persistent signing certificate ends the mint-and-revoke churn
       # (and Apple's "certificate revoked" emails): automatic signing only
       # mints a NEW Apple Development cert when no usable private key is
-      # in the keychain. Export one once (Xcode → Settings → Accounts →
-      # Manage Certificates → right-click → Export) and store it as
-      # secrets APPLE_DEV_CERT_P12 (base64) + APPLE_DEV_CERT_PASSWORD.
+      # in the keychain. mint-apple-cert.yml makes one without a Mac; the
+      # whole Apple team shares THAT one — store it as secrets
+      # APPLE_DEV_CERT_P12 (base64) + APPLE_DEV_CERT_PASSWORD at repository
+      # level and in every environment that overrides them (the wizard
+      # ships the machine's copy into environment local by itself).
       - name: Import persistent signing certificate
         id: signingcert
         if: steps.asc.outputs.present == 'true'
@@ -237,11 +239,33 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -A -f pkcs12
           security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KEYCHAIN" > /dev/null
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          # the serial names THIS certificate at Apple (the validity check
+          # and the sweep's protection below) — a public attribute
+          SERIAL="$(openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -nokeys -passin env:CERT_PASSWORD 2>/dev/null | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2)"
           rm "$RUNNER_TEMP/cert.p12"
+          if [ -z "$SERIAL" ]; then
+            echo "::error title=Persistent certificate unreadable::the keychain took APPLE_DEV_CERT_P12 but openssl could not read the certificate inside it — re-mint with mint-apple-cert.yml"
+            exit 1
+          fi
+          echo "imported the persistent certificate (serial $SERIAL)"
+          echo "serial=$SERIAL" >> "$GITHUB_OUTPUT"
           echo "present=true" >> "$GITHUB_OUTPUT"
         env:
           CERT_B64: ${{ secrets.APPLE_DEV_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.APPLE_DEV_CERT_PASSWORD }}
+
+      # A revoked or expired persistent certificate imports without a
+      # word, and Xcode then silently mints a throwaway per build until
+      # Apple's cap ends the builds (2026-09-09: ten in a day after a mint
+      # had wiped the hosted track's certificate) — fail fast, name the fix
+      - name: Check the persistent certificate is still valid at Apple
+        if: steps.signingcert.outputs.present == 'true'
+        run: node .github/scripts/asc-cert-check.js
+        env:
+          CERT_SERIAL: ${{ steps.signingcert.outputs.serial }}
+          ASC_KEY_PATH: ${{ runner.temp }}/asc.p8
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
 
       # Every ephemeral runner without the persistent cert mints a NEW
       # Apple Development certificate during archive (its keychain dies
@@ -249,12 +273,16 @@ jobs:
       # "Choose a certificate to revoke". Pinning CODE_SIGN_IDENTITY does
       # NOT work (automatic signing rejects a manual identity and the
       # override drags the Pods targets into signing), so prune the stale
-      # dev certs via the ASC API instead. Skipped once the persistent
-      # cert is in place — each revocation triggers an Apple email.
+      # dev certs via the ASC API instead. With the persistent cert in
+      # place the same step is the SWEEP that revokes throwaways other
+      # builds left behind (normally none — then no Apple email); the
+      # persistent cert itself is protected by serial, never by age.
       - name: Prune CI-minted development certificates
-        if: steps.asc.outputs.present == 'true' && steps.signingcert.outputs.present != 'true'
+        if: steps.asc.outputs.present == 'true'
         run: node .github/scripts/asc-prune.js
         env:
+          PROTECT_SERIALS: ${{ steps.signingcert.outputs.serial }}
+          KEEP_NEWEST: ${{ steps.signingcert.outputs.present == 'true' && '1' || '3' }}
           ASC_KEY_PATH: ${{ runner.temp }}/asc.p8
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
