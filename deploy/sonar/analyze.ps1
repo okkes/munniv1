@@ -49,6 +49,18 @@ try {
     if ($LASTEXITCODE -ne 0) { Write-Error 'admin analysis failed' }
 } finally { Pop-Location }
 
+# --- control: the shared-services cockpit, same regime as admin ----------
+Write-Host "==> vitest coverage (apps/control)" -ForegroundColor Cyan
+Push-Location (Join-Path $repo 'apps\control')
+try {
+    cmd /c "npx vitest run --coverage --coverage.reporter=lcov 2>&1"
+    if ($LASTEXITCODE -ne 0) { Write-Error 'control vitest failed - fix tests before analyzing' }
+
+    Write-Host "==> sonar-scanner (munni-control)" -ForegroundColor Cyan
+    cmd /c "docker run --rm -e SONAR_HOST_URL=http://host.docker.internal:9000 -e SONAR_TOKEN=$token -v `"$PWD`:/usr/src`" sonarsource/sonar-scanner-cli 2>&1"
+    if ($LASTEXITCODE -ne 0) { Write-Error 'control analysis failed' }
+} finally { Pop-Location }
+
 # --- api: SonarScanner for .NET, dockerized (nothing to install) ---
 # coverage runs on the HOST (Testcontainers/Docker are unavailable inside
 # the scanner container); the opencover report's absolute Windows paths
