@@ -32,7 +32,9 @@ envsubst "$VARLIST" < "$TEMPLATE" > "$OUTPUT"
 # a stack cannot run without these — fail loudly, not at 3am on the NAS.
 # Only enforced when the template actually references the name (the iac
 # templates bake DOMAIN at render time, so NAS_DOMAIN never appears there).
-for required in NAS_GHCR_PAT NAS_POSTGRES_PASSWORD NAS_DOMAIN; do
+# NAS_GHCR_PAT is deliberately absent: the munni images are public and
+# update.sh only logs into ghcr.io when a token is present (2026-09-10)
+for required in NAS_POSTGRES_PASSWORD NAS_DOMAIN; do
   printf '%s\n' "${NAMES[@]}" | grep -qx "$required" || continue
   if [ -z "${!required:-}" ]; then
     echo "::error::required secret $required is missing or empty" >&2
