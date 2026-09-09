@@ -11,7 +11,7 @@ const MANIFEST = JSON.parse(
 const b64url = (buf) => buf.toString('base64url');
 
 /** RFC 8292 VAPID pair: raw P-256 public point (65B) + private scalar, base64url */
-function vapidPair() {
+export function vapidPair() {
   const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const jwk = privateKey.export({ format: 'jwk' });
   const pub = Buffer.concat([
@@ -44,6 +44,12 @@ export function existingEnvSecrets(env) {
   return new Set(out.split(/\s+/).filter(Boolean));
 }
 
+/** repository-level secret names — where scope:"global" operator roots live */
+export function existingRepoSecrets() {
+  const out = gh(['api', 'repos/{owner}/{repo}/actions/secrets', '--paginate', '-q', '.secrets[].name']);
+  return new Set(out.split(/\s+/).filter(Boolean));
+}
+
 export function setEnvSecret(env, name, value) {
   gh(['secret', 'set', name, '--env', env, '--body', value]);
 }
@@ -57,6 +63,9 @@ export function ensureSecrets(stack, { rotate = [] } = {}) {
   const env = stack.githubEnvironment;
   ensureEnvironment(env);
   const present = existingEnvSecrets(env);
+  // scope:"global" operator roots may live at REPO level (the wizard and
+  // README A1 store them there, shared by every stack) — count those too
+  const repoLevel = existingRepoSecrets();
   const minted = [];
   const missingOperator = [];
 
@@ -73,7 +82,8 @@ export function ensureSecrets(stack, { rotate = [] } = {}) {
 
   for (const entry of MANIFEST.secrets) {
     if (entry.name.startsWith('NAS_PUSH_VAPID_')) continue;
-    const needed = rotate.includes(entry.name) || !present.has(entry.name);
+    const anywhere = present.has(entry.name) || (entry.scope === 'global' && repoLevel.has(entry.name));
+    const needed = rotate.includes(entry.name) || !anywhere;
     if (!needed) continue;
     if (entry.owner === 'generated') {
       setEnvSecret(env, entry.name, generateValue(entry.name));
@@ -89,11 +99,11 @@ export function ensureSecrets(stack, { rotate = [] } = {}) {
 /** manifest-vs-reality check used by --verify (no writes) */
 export function verifySecrets(stack) {
   const present = existingEnvSecrets(stack.githubEnvironment);
+  const repoLevel = existingRepoSecrets();
+  const satisfied = (s) => present.has(s.name) || (s.scope === 'global' && repoLevel.has(s.name));
   // module-owned secrets arrive when their module runs — absence is a
   // pending step, not manifest drift
-  const missing = MANIFEST.secrets
-    .filter((s) => !s.optional && s.owner !== 'module' && !present.has(s.name))
-    .map((s) => s.name);
+  const missing = MANIFEST.secrets.filter((s) => !s.optional && s.owner !== 'module' && !satisfied(s)).map((s) => s.name);
   const unmanaged = [...present].filter((name) => !MANIFEST.secrets.some((s) => s.name === name));
   return { missing, unmanaged };
 }
