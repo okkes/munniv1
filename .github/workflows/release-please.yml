@@ -15,6 +15,9 @@ permissions:
 
 jobs:
   release-please:
+    # first-boot latch: fresh repo copies skip every run until the
+    # wizard marks the repo initialized (variable MUNNI_INITIALIZED)
+    if: ${{ vars.MUNNI_INITIALIZED == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: googleapis/release-please-action@v5
