@@ -22,16 +22,17 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, X509Certificate } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MANIFEST } from '../modules/secrets.mjs';
 import { familyValues, loadLocalValues, saveLocalValues, stackManifestEntries } from '../modules/localstore.mjs';
 import { insecureFetch, localAwareFetch } from '../modules/insecure-fetch.mjs';
-import { lanHost, loadStack, localEnvRegistry, saveLocalEnvRegistry } from '../modules/stack.mjs';
+import { lanHost, loadAutonomy, loadStack, localEnvRegistry, saveAutonomy, saveLocalEnvRegistry } from '../modules/stack.mjs';
 import { jwtES256, jwtRS256, validate } from '../modules/validate.mjs';
 import { buildAccount, buildCipher, encString, vaultImport, vaultLogin, vaultPurge, vaultRegister } from '../modules/vault.mjs';
+import { zipEntry, zipNames } from '../modules/zip.mjs';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(DIR, '..', '..');
@@ -176,7 +177,14 @@ async function statusEndpoint(res, probeImpl) {
   for (const name of LOCAL_STACKS()) {
     stacks[name] = await stackStatus(name, probeImpl);
   }
-  return json(res, 200, { docker, stacks, lan: lanHost() });
+  const { enabled, lastCheckAt, lastResult } = loadAutonomy();
+  // the Google console links point at the Play service account's own
+  // project — the OAuth client belongs next to the Firebase apps
+  let googleProject = null;
+  try {
+    googleProject = JSON.parse(loadLocalValues(loadStack(SHARED_STACK)).PLAY_SERVICE_ACCOUNT_JSON ?? 'null')?.project_id ?? null;
+  } catch { /* no or malformed service account — generic links */ }
+  return json(res, 200, { docker, stacks, lan: lanHost(), googleProject, autonomy: { enabled, lastCheckAt, lastResult, running: autonomyRunning } });
 }
 
 /* ── run bootstrap ─────────────────────────────────────────────────── */
@@ -581,7 +589,72 @@ async function installFamilyCa(res, run, netFetchImpl) {
 async function trustCaEndpoint(res, spawnImpl, netFetchImpl) {
   res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-cache' });
   const ok = await installFamilyCa(res, stepRunner(spawnImpl), netFetchImpl);
+  caTrustMemo = { at: 0, value: null }; // the next probe reads the store afresh
   return res.end(`\n[exit ${ok ? 0 : 1}]\n`);
+}
+
+/* ── is the family CA trusted on THIS PC? (user request 2026-09-10: no
+   manual tick — with the CA site up, compare the root's fingerprint with
+   the CurrentUser Root store). Memoized a minute; trust-ca busts it. ── */
+let caTrustMemo = { at: 0, value: null };
+/** certutil prints one "Cert Hash(sha1): …" line per certificate — with or
+ *  without spaces depending on the Windows build; compare hex only */
+export function caListingHasFingerprint(listing, fingerprint) {
+  const want = String(fingerprint ?? '').replace(/[^0-9a-f]/gi, '').toLowerCase();
+  return want.length === 40 && String(listing ?? '').split(/\r?\n/).some((line) => /sha1/i.test(line) && line.replace(/[^0-9a-f]/gi, '').toLowerCase().includes(want));
+}
+async function caTrustState(netFetchImpl, spawnImpl, { force = false } = {}) {
+  const lan = lanHost();
+  if (!lan) return { trusted: null, reason: 'LAN mode is off — no family certificate to trust' };
+  if (process.platform !== 'win32') return { trusted: null, reason: 'not Windows — trust the root by hand' };
+  if (!force && caTrustMemo.value && Date.now() - caTrustMemo.at < 60000) return caTrustMemo.value;
+  const remember = (value) => { caTrustMemo = { at: Date.now(), value }; return value; };
+  const base = `${lan.replaceAll('.', '-')}.sslip.io`;
+  let pem;
+  try {
+    const r = await netFetchImpl(`http://ca.${base}/root.crt`, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) throw new Error(`status ${r.status}`);
+    pem = await r.text();
+  } catch (e) {
+    return remember({ trusted: null, reason: `the family CA site is not up (${e.message}) — known once the family runs` });
+  }
+  let fingerprint;
+  try {
+    fingerprint = new X509Certificate(pem).fingerprint;
+  } catch (e) {
+    return remember({ trusted: null, reason: `root.crt is unreadable (${e.message})` });
+  }
+  const listing = await capture(spawnImpl, 'certutil', ['-user', '-store', 'Root']);
+  const trusted = caListingHasFingerprint(listing.out, fingerprint);
+  return remember({ trusted, fingerprint: fingerprint.replaceAll(':', '').slice(0, 12).toLowerCase(), reason: trusted ? 'the family root is in this user’s Root store' : 'the family root is not in this user’s Root store yet — Trust the certificate again installs it' });
+}
+async function caTrustEndpoint(res, url, netFetchImpl, spawnImpl) {
+  return json(res, 200, await caTrustState(netFetchImpl, spawnImpl, { force: url.searchParams.get('force') === '1' }));
+}
+
+/* ── are the munni images public? Then no registry token is needed to
+   pull them (user request 2026-09-10: stop asking for a second token).
+   An anonymous pull token + a manifest HEAD, memoized ten minutes. ── */
+let registryMemo = { at: 0, value: null };
+async function registryState(netFetchImpl, { force = false } = {}) {
+  if (!force && registryMemo.value && Date.now() - registryMemo.at < 600000) return registryMemo.value;
+  const registry = loadStack(SHARED_STACK).registry ?? 'ghcr.io/okkes';
+  const repo = `${registry.replace(/^ghcr\.io\//, '')}/munni-web`;
+  const remember = (value) => { registryMemo = { at: Date.now(), value }; return value; };
+  try {
+    const t = await netFetchImpl(`https://ghcr.io/token?scope=repository:${repo}:pull`, { signal: AbortSignal.timeout(8000) });
+    const token = t.ok ? (await t.json())?.token : null;
+    const m = token
+      ? await netFetchImpl(`https://ghcr.io/v2/${repo}/manifests/latest`, { method: 'HEAD', headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' }, signal: AbortSignal.timeout(8000) })
+      : null;
+    const isPublic = Boolean(m?.ok);
+    return remember({ public: isPublic, image: `ghcr.io/${repo}`, detail: isPublic ? `the munni images (ghcr.io/${repo.split('/')[0]}/…) are public — no registry token is needed to pull them` : `ghcr.io answered ${m?.status ?? t.status} for an anonymous pull of ${repo} — private images need a classic PAT with read:packages` });
+  } catch (e) {
+    return remember({ public: null, image: `ghcr.io/${repo}`, detail: `could not reach ghcr.io (${e.message})` });
+  }
+}
+async function registryEndpoint(res, url, netFetchImpl) {
+  return json(res, 200, await registryState(netFetchImpl, { force: url.searchParams.get('force') === '1' }));
 }
 
 /* ── store readiness (user ruling 2026-08-28: no manual Enable-publish
@@ -590,7 +663,8 @@ async function trustCaEndpoint(res, spawnImpl, netFetchImpl) {
    local store; checks mirror what CI's publish steps really do. ── */
 /** Google access token from the stored Play service account, for any
  * scope — the SAME credential drives the Play checks AND (once granted
- * the Firebase Admin role) the Firebase Management API. Throws with the
+ * the Firebase Admin + Service Usage Admin roles) the Firebase
+ * Management API. Throws with the
  * exact operator-facing diagnosis on failure. */
 async function googleAccessToken(values, scope, fetchImpl) {
   let sa;
@@ -728,7 +802,16 @@ async function firebaseState(values, stack, fetchImpl) {
   const fb = fbFetcher(access, fetchImpl);
   const proj = await fb(`/projects/${projectId}`);
   if (proj.status >= 500) return { state: 'transient', detail: `Firebase answered ${proj.status} — retried on the next poll` };
-  if (!proj.ok) return { state: 'missing-app', detail: await fbExplain(proj, projectId, clientEmail) };
+  if (proj.status === 404) {
+    // a bare Cloud project (the Management API IS on — off answers 403):
+    // Build adds Firebase, IF the account may switch services on. The
+    // no-op enable is the honest probe and changes nothing here
+    const en = await enableService(access, projectId, FB_API, fetchImpl);
+    return en.ok
+      ? { state: 'missing-app', detail: `push stubbed — ${projectId} is not a Firebase project yet; Build adds Firebase to it` }
+      : { state: 'error', detail: await suExplain(en, projectId, clientEmail, FB_API) };
+  }
+  if (!proj.ok) return { state: 'error', detail: fbExplain(proj.status, await googleError(proj), projectId, clientEmail) };
   const [aList, iList] = await Promise.all([
     fb(`/projects/${projectId}/androidApps?pageSize=100`).then((r) => r.json()).then((b) => b.apps ?? []),
     fb(`/projects/${projectId}/iosApps?pageSize=100`).then((r) => r.json()).then((b) => b.apps ?? []),
@@ -772,7 +855,7 @@ async function storeRetireEndpoint(req, res, netFetchImpl) {
   res.write(`▶ retire ${appId === iosAppId ? appId : `${appId} (Play) + ${iosAppId} (TestFlight)`} at the stores — distribution is withdrawn; the records themselves have no delete API\n\n`);
   let ok = true;
   if (!values.PLAY_SERVICE_ACCOUNT_JSON) {
-    res.write('Play: no service account stored (step 3) — skipped\n');
+    res.write('Play: no service account stored (Features & accounts) — skipped\n');
   } else {
     try {
       const access = await playAccessToken(values, netFetchImpl);
@@ -812,7 +895,7 @@ async function storeRetireEndpoint(req, res, netFetchImpl) {
     }
   }
   if (!values.ASC_KEY_ID || !values.ASC_ISSUER_ID || !values.ASC_KEY_P8) {
-    res.write('TestFlight: no App Store Connect key stored (step 3) — skipped\n');
+    res.write('TestFlight: no App Store Connect key stored (Features & accounts) — skipped\n');
   } else {
     try {
       const jwt = ascJwt(values);
@@ -857,39 +940,114 @@ async function storeRetireEndpoint(req, res, netFetchImpl) {
    OWN Cloud project becomes the Firebase project via the Management
    API; each environment's Android/iOS apps are registered there and
    their config files ride to CI as variables. The one-time Google
-   floor: grant that service account the Firebase Admin role. ── */
+   floor: grant that service account the Firebase Admin role AND the
+   Service Usage Admin role — adding Firebase to a Cloud project switches
+   APIs on, which Google gates behind serviceusage.services.enable, and
+   Firebase Admin does NOT carry that permission (found live 2026-09-08:
+   role granted, addFirebase still 403 — the old text blamed the wrong
+   role). By hand instead: add Firebase to the project once in the
+   Firebase console, after which Firebase Admin alone is enough. ── */
 const FB_BASE = 'https://firebase.googleapis.com/v1beta1';
+const SU_BASE = 'https://serviceusage.googleapis.com/v1';
+const FB_API = 'firebase.googleapis.com';
+const iamUrl = (projectId) => `https://console.cloud.google.com/iam-admin/iam?project=${projectId}`;
 const fbFetcher = (access, fetchImpl) => (path, init = {}) => fetchImpl(`${FB_BASE}${path}`, {
   ...init,
   headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json', ...init.headers },
   signal: AbortSignal.timeout(20000),
 });
 
-/** name the two classic refusals precisely (mirrors the Play pattern) */
-async function fbExplain(r, projectId, clientEmail) {
-  const body = await r.json().catch(() => ({}));
-  const disabled = body?.error?.details?.find((d) => d.reason === 'SERVICE_DISABLED');
-  if (disabled || /has not been used in project|it is disabled/.test(body?.error?.message ?? '')) {
-    const url = disabled?.metadata?.activationUrl ?? `https://console.cloud.google.com/apis/library/firebase.googleapis.com?project=${projectId}`;
-    return `the Firebase Management API is disabled in ${projectId} — enable it once (${url}), wait a few minutes, retry`;
-  }
+/** Google's error envelope, or {} when the body is not JSON */
+const googleError = async (r) => (await r.json().catch(() => ({})))?.error ?? {};
+/** the SERVICE_DISABLED detail (or {} when only the message says so) */
+const serviceDisabled = (err) => err.details?.find((d) => d.reason === 'SERVICE_DISABLED')
+  ?? (/has not been used in project|it is disabled/.test(err.message ?? '') ? {} : null);
+/** the permission Google itself names in a refusal (ErrorInfo metadata) */
+const deniedPermission = (err) => err.details?.find((d) => d.reason === 'AUTH_PERMISSION_DENIED')?.metadata?.permission;
+const ROLE_FOR = { 'serviceusage.services.enable': 'Service Usage Admin role' };
+
+/** switch an API on in the service account's own Cloud project — a
+ * no-op when it already is, which makes it the one honest probe for
+ * serviceusage.services.enable BEFORE addFirebase burns a 403 */
+const enableService = (access, projectId, service, fetchImpl) => fetchImpl(`${SU_BASE}/projects/${projectId}/services/${service}:enable`, {
+  method: 'POST',
+  headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
+  body: '{}',
+  signal: AbortSignal.timeout(20000),
+});
+
+/** name enableService's refusal precisely — the role gap, both ways out */
+async function suExplain(r, projectId, clientEmail, service) {
+  const err = await googleError(r);
   if (r.status === 403) {
-    return `${clientEmail} lacks Firebase rights on ${projectId} — grant it the Firebase Admin role once (https://console.cloud.google.com/iam-admin/iam?project=${projectId}), wait a minute, retry`;
+    const perm = deniedPermission(err) ?? 'serviceusage.services.enable';
+    return `${clientEmail} may not switch APIs on in ${projectId} (${perm} — the Firebase Admin role does NOT carry it). One-time, pick one: grant it the Service Usage Admin role beside Firebase Admin (${iamUrl(projectId)}), wait a minute, Build again — or add Firebase to ${projectId} by hand once (https://console.firebase.google.com → Add project → choose the existing Cloud project ${projectId}), after which Firebase Admin alone is enough`;
   }
-  return body?.error?.message ?? `status ${r.status}`;
+  return `Google refused switching on ${service} in ${projectId} (${r.status}): ${err.message ?? 'no detail'}`;
 }
 
-/** poll a long-running Firebase operation to completion */
-async function fbOpWait(fb, opRes) {
+/** name the classic Firebase Management API refusals precisely */
+function fbExplain(status, err, projectId, clientEmail) {
+  const disabled = serviceDisabled(err);
+  if (disabled) {
+    const url = disabled.metadata?.activationUrl ?? `https://console.cloud.google.com/apis/library/${FB_API}?project=${projectId}`;
+    return `the Firebase Management API is disabled in ${projectId} — Build switches it on by itself once ${clientEmail} holds the Service Usage Admin role; or enable it by hand (${url}), wait a few minutes, retry`;
+  }
+  const perm = deniedPermission(err);
+  if (perm) {
+    return `${clientEmail} lacks ${perm} on ${projectId} — grant it the ${ROLE_FOR[perm] ?? `role that carries ${perm}`} (${iamUrl(projectId)}), wait a minute, retry`;
+  }
+  if (status === 403) {
+    return `${clientEmail} lacks Firebase rights on ${projectId}${err.message ? ` (Google: ${err.message})` : ''} — grant it the Firebase Admin role once (${iamUrl(projectId)}), wait a minute, retry`;
+  }
+  return err.message ?? `status ${status}`;
+}
+
+/** poll a long-running Google operation (Firebase, Service Usage) to completion */
+async function opWait(getOp, opRes, what) {
   let op = await opRes.json();
   const deadline = Date.now() + 90000;
-  while (!op.done) {
-    if (Date.now() > deadline) throw new Error('the Firebase operation never finished — retry in a minute');
+  while (op.name && !op.done) {
+    if (Date.now() > deadline) throw new Error(`${what} never finished — retry in a minute`);
     await new Promise((r) => setTimeout(r, 2000));
-    op = await (await fb(`/${op.name}`)).json();
+    op = await (await getOp(op.name)).json();
   }
-  if (op.error) throw new Error(op.error.message ?? 'operation failed');
+  if (op.error) throw new Error(op.error.message ?? `${what} failed`);
   return op;
+}
+const fbOpWait = (fb, opRes) => opWait((name) => fb(`/${name}`), opRes, 'the Firebase operation');
+const suOpWait = (access, opRes, fetchImpl) => opWait(
+  (name) => fetchImpl(`${SU_BASE}/${name}`, { headers: { authorization: `Bearer ${access}` }, signal: AbortSignal.timeout(20000) }),
+  opRes, 'switching the API on',
+);
+
+/** turn the bare Cloud project into a Firebase project: API on (a no-op
+ * probe of the enable right when it already is), then addFirebase — a
+ * freshly switched-on API takes Google a moment to notice */
+async function fbAddFirebase(res, fb, access, projectId, clientEmail, apiOff, fetchImpl) {
+  const en = await enableService(access, projectId, FB_API, fetchImpl);
+  if (!en.ok) {
+    res.write(`could not add Firebase: ${await suExplain(en, projectId, clientEmail, FB_API)}\n`);
+    return false;
+  }
+  await suOpWait(access, en, fetchImpl);
+  if (apiOff) res.write('Firebase Management API enabled ✓\n');
+  const attempt = () => fb(`/projects/${projectId}:addFirebase`, { method: 'POST', body: '{}' });
+  let add = await attempt();
+  let err = add.ok ? null : await googleError(add);
+  for (let left = apiOff ? 12 : 0; left > 0 && err && serviceDisabled(err); left -= 1) {
+    if (left === 12) res.write('Google needs a moment to notice the switch — waiting…\n');
+    await new Promise((r) => setTimeout(r, 5000));
+    add = await attempt();
+    err = add.ok ? null : await googleError(add);
+  }
+  if (err) {
+    res.write(`could not add Firebase: ${fbExplain(add.status, err, projectId, clientEmail)}\n`);
+    return false;
+  }
+  await fbOpWait(fb, add);
+  res.write(`Firebase enabled on ${projectId} ✓\n`);
+  return true;
 }
 
 /** get-or-create one Firebase app (android|ios) and return its config */
@@ -907,13 +1065,62 @@ async function fbEnsureApp(fb, res, projectId, kind, id, label) {
     res.write(`  ${id} registered as a Firebase ${kind} app ✓\n`);
   } else {
     res.write(`  ${id} already registered ✓\n`);
+    if (app.displayName !== label) {
+      // the console chips show the DISPLAY name — the track belongs in it
+      // (user 2026-09-08: 'munni prod' is ambiguous beside the nas twins)
+      const renamed = await fb(`/projects/${projectId}/${coll}/${app.appId}?updateMask=displayName`, { method: 'PATCH', body: JSON.stringify({ displayName: label }) });
+      res.write(renamed.ok ? `  renamed to "${label}" ✓\n` : `  (could not rename it to "${label}" — Firebase answered ${renamed.status}; cosmetic, carrying on)\n`);
+    }
   }
   const cfg = await fb(`/projects/${projectId}/${coll}/${app.appId}/config`);
   if (!cfg.ok) throw new Error(`could not fetch ${id}'s config (${cfg.status})`);
   return (await cfg.json()).configFileContents; // base64 of the file
 }
 
-async function firebaseSetupEndpoint(req, res, netFetchImpl) {
+/** the env's api must CARRY the sender: re-render + up when its rendered
+ * env lacks the credential, then take the api's own word from /health.
+ * Found live 2026-09-08: 'stored ✓' printed while the api still ran
+ * with an empty Fcm__ServiceAccountJson — friend requests reached the
+ * in-app bell, the phone stayed silent (the routing sender reports
+ * success for a transport that is not configured). */
+async function applySenderToApi(res, stack, clientEmail, spawnImpl, fetchImpl) {
+  const envFile = join(renderedDir(stack.stack), `.env.${stack.stack}`);
+  if (existsSync(envFile) && readFileSync(envFile, 'utf8').includes(clientEmail)) {
+    res.write(`sender: the ${stack.envName} api environment already carries it ✓\n`);
+    return true;
+  }
+  const run = stepRunner(spawnImpl);
+  const render = await run(res, `re-render ${stack.envName} with the sender credential`, process.execPath,
+    [join(ROOT, 'infra', 'bootstrap.mjs'), '--stack', stack.stack], { cwd: ROOT });
+  if (render.code !== 0) {
+    res.write('the re-render failed — the api keeps running WITHOUT a sender until Set up & start succeeds\n');
+    return false;
+  }
+  const up = await run(res, `restart ${stack.envName} so the api picks the sender up`, 'docker',
+    [...composeArgs(stack.stack), 'up', '-d', '--remove-orphans'], { cwd: renderedDir(stack.stack) });
+  if (up.code !== 0) {
+    res.write('the restart failed — is Docker running? (Set up & start retries it)\n');
+    return false;
+  }
+  const deadline = Date.now() + 90000;
+  while (Date.now() < deadline) {
+    try {
+      const health = await fetchImpl(`${stack.urls.api}/health`, { signal: AbortSignal.timeout(5000) });
+      if (health.ok && (await health.json())?.capabilities?.fcm === true) {
+        res.write('the api reports native push (fcm) ✓\n');
+        return true;
+      }
+    } catch { /* still starting */ }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  res.write(`the api did not report fcm within 90 s — check ${stack.urls.api}/health and the api logs\n`);
+  return false;
+}
+
+/** Firebase console chips show these — the TRACK belongs in the name */
+const fbLabel = (stack, kind) => `munni local ${stack.envName} ${kind}`;
+
+async function firebaseSetupEndpoint(req, res, netFetchImpl, spawnImpl) {
   const body = await readBody(req);
   if (!LOCAL_ENVS().length) return json(res, 400, { error: 'no environments exist yet' });
   const stack = loadStack(pickEnv(body.stack));
@@ -921,7 +1128,7 @@ async function firebaseSetupEndpoint(req, res, netFetchImpl) {
   res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-cache' });
   res.write(`▶ Firebase push for ${stack.envName} — project, app registrations and configs, all as code\n\n`);
   if (!values.PLAY_SERVICE_ACCOUNT_JSON) {
-    res.write('the Play service account is not stored yet (step 3) — the SAME credential drives Firebase\n');
+    res.write('the Play service account is not stored yet (Features & accounts) — the SAME credential drives Firebase\n');
     return res.end('[exit 1]\n');
   }
   try {
@@ -931,30 +1138,29 @@ async function firebaseSetupEndpoint(req, res, netFetchImpl) {
     if (proj.ok) {
       res.write(`Firebase project ${projectId} ✓\n`);
     } else {
-      // a bare Cloud project answers 403/404 here — adding Firebase to
-      // it is exactly the console's "create project" without the console
-      res.write(`${projectId} is not a Firebase project yet — adding Firebase to it…\n`);
-      const add = await fb(`/projects/${projectId}:addFirebase`, { method: 'POST', body: '{}' });
-      if (!add.ok) {
-        res.write(`could not add Firebase: ${await fbExplain(add, projectId, clientEmail)}\n`);
-        return res.end('[exit 1]\n');
-      }
-      await fbOpWait(fb, add);
-      res.write(`Firebase enabled on ${projectId} ✓\n`);
+      // a bare Cloud project answers 404 here (403 SERVICE_DISABLED while
+      // the Management API is off) — adding Firebase to it is exactly the
+      // console's "create project" without the console
+      const apiOff = Boolean(serviceDisabled(await googleError(proj)));
+      res.write(apiOff
+        ? `the Firebase Management API is off in ${projectId} — switching it on…\n`
+        : `${projectId} is not a Firebase project yet — adding Firebase to it…\n`);
+      if (!(await fbAddFirebase(res, fb, access, projectId, clientEmail, apiOff, netFetchImpl))) return res.end('[exit 1]\n');
     }
-    await fbEnsureApp(fb, res, projectId, 'android', stack.native.appId, `munni ${stack.envName} android`);
+    await fbEnsureApp(fb, res, projectId, 'android', stack.native.appId, fbLabel(stack, 'android'));
     res.write('  google-services.json ready — the next Android build bakes it in (push active)\n');
-    await fbEnsureApp(fb, res, projectId, 'ios', stack.native.iosAppId, `munni ${stack.envName} ios`);
+    await fbEnsureApp(fb, res, projectId, 'ios', stack.native.iosAppId, fbLabel(stack, 'ios'));
     res.write('  GoogleService-Info.plist ready — the next iOS build bakes it in\n');
     // the API's SENDER credential: same service account, zero extra input
     const shared = loadStack(SHARED_STACK);
     const sharedValues = loadLocalValues(shared);
     if (!sharedValues.NAS_FCM_SERVICE_ACCOUNT_JSON) {
       saveLocalValues(shared, { ...sharedValues, NAS_FCM_SERVICE_ACCOUNT_JSON: values.PLAY_SERVICE_ACCOUNT_JSON });
-      res.write('sender credential: the api sends push with the SAME service account — stored ✓ (press Set up & start once so the api container picks it up)\n');
+      res.write('sender credential: the api sends push with the SAME service account — stored ✓\n');
     } else {
       res.write('sender credential: already stored ✓\n');
     }
+    if (!(await applySenderToApi(res, stack, clientEmail, spawnImpl, netFetchImpl))) return res.end('[exit 1]\n');
     res.write('\nRemaining manual floor for iOS push only: upload the APNs key once — Firebase console → Project settings → Cloud Messaging → Apple app configuration.\n');
     return res.end('\n[exit 0]\n');
   } catch (e) {
@@ -1055,10 +1261,16 @@ async function newStorePackageEndpoint(req, res, spawnImpl) {
    create-API). Registers bundle app.munni.local.<env> with the
    LONG-RUN capabilities so nothing needs re-provisioning later. ── */
 const IOS_CAPABILITIES = [
-  ['PUSH_NOTIFICATIONS', 'push notifications (FCM later — tick now, never reprovision)'],
-  ['APPLE_ID_AUTH', 'Sign in with Apple (Apple requires it beside Google login)'],
-  ['ASSOCIATED_DOMAINS', 'associated domains (universal links on the hosted track)'],
+  ['PUSH_NOTIFICATIONS', 'push notifications (FCM later — tick now, never reprovision)', null],
+  // Sign in with Apple only EXISTS with the primary-app consent setting:
+  // without it Apple records nothing, keys and Services IDs find "no
+  // identifiers available", and the API answers 409 — which the loop
+  // used to read as "already enabled" (found live 2026-09-09)
+  ['APPLE_ID_AUTH', 'Sign in with Apple as the PRIMARY App ID (keys and Services IDs attach to it)', [{ key: 'APPLE_ID_AUTH_APP_CONSENT', options: [{ key: 'PRIMARY_APP_CONSENT' }] }]],
+  ['ASSOCIATED_DOMAINS', 'associated domains (universal links on the hosted track)', null],
 ];
+const isPrimaryAppleId = (cap) => (cap.attributes?.settings ?? [])
+  .some((s) => s.key === 'APPLE_ID_AUTH_APP_CONSENT' && (s.options ?? []).some((o) => o.key === 'PRIMARY_APP_CONSENT'));
 
 async function iosAppIdEndpoint(req, res, fetchImpl) {
   const body = await readBody(req);
@@ -1067,7 +1279,7 @@ async function iosAppIdEndpoint(req, res, fetchImpl) {
   const values = familyValues(stack);
   res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-cache' });
   if (!values.ASC_KEY_ID || !values.ASC_ISSUER_ID || !values.ASC_KEY_P8) {
-    res.write('the App Store Connect key is not stored yet (step 3) — cannot register the App ID\n');
+    res.write('the App Store Connect key is not stored yet (Features & accounts) — cannot register the App ID\n');
     return res.end('[exit 1]\n');
   }
   let jwt;
@@ -1094,7 +1306,7 @@ async function iosAppIdEndpoint(req, res, fetchImpl) {
   } else {
     const created = await asc('/bundleIds', {
       method: 'POST',
-      body: JSON.stringify({ data: { type: 'bundleIds', attributes: { identifier: bundleId, name: `munni ${stack.envName}`, platform: 'IOS' } } }),
+      body: JSON.stringify({ data: { type: 'bundleIds', attributes: { identifier: bundleId, name: `munni local ${stack.envName}`, platform: 'IOS' } } }),
     });
     if (!created.ok) {
       res.write(`could not register ${bundleId} (${created.status}): ${(await created.text()).slice(0, 300)}\n`);
@@ -1103,21 +1315,37 @@ async function iosAppIdEndpoint(req, res, fetchImpl) {
     record = (await created.json()).data;
     res.write(`App ID ${bundleId} registered ✓\n`);
   }
-  for (const [cap, why] of IOS_CAPABILITIES) {
-    const r = await asc('/bundleIdCapabilities', {
-      method: 'POST',
-      body: JSON.stringify({ data: {
-        type: 'bundleIdCapabilities',
-        attributes: { capabilityType: cap },
-        relationships: { bundleId: { data: { type: 'bundleIds', id: record.id } } },
-      } }),
-    });
-    // 409 = already enabled — exactly what we want on a re-run
-    if (r.ok || r.status === 409) res.write(`  capability ${cap} ✓ — ${why}\n`);
-    else res.write(`  capability ${cap} answered ${r.status} — enable it by hand if it is missing\n`);
+  // the LIST is the truth about what Apple recorded — a 409 means
+  // "already there" OR "entity refused", and only the list tells them apart
+  const listCaps = async () => (((await (await asc(`/bundleIds/${record.id}/bundleIdCapabilities`)).json()).data) ?? []);
+  let have = await listCaps();
+  let ok = true;
+  for (const [cap, why, settings] of IOS_CAPABILITIES) {
+    const existing = have.find((c) => c.attributes?.capabilityType === cap);
+    const complete = (c) => c && (!settings || isPrimaryAppleId(c));
+    if (complete(existing)) {
+      res.write(`  capability ${cap} ✓ — ${why}\n`);
+      continue;
+    }
+    const attributes = settings ? { capabilityType: cap, settings } : { capabilityType: cap };
+    const r = existing
+      ? await asc(`/bundleIdCapabilities/${existing.id}`, { method: 'PATCH', body: JSON.stringify({ data: { type: 'bundleIdCapabilities', id: existing.id, attributes } }) })
+      : await asc('/bundleIdCapabilities', { method: 'POST', body: JSON.stringify({ data: { type: 'bundleIdCapabilities', attributes, relationships: { bundleId: { data: { type: 'bundleIds', id: record.id } } } } }) });
+    if (r.ok) {
+      res.write(`  capability ${cap} ${existing ? 'completed' : 'enabled'} ✓ — ${why}\n`);
+      continue;
+    }
+    const detail = (await r.text().catch(() => '')).slice(0, 200);
+    have = await listCaps();
+    if (complete(have.find((c) => c.attributes?.capabilityType === cap))) {
+      res.write(`  capability ${cap} ✓ — ${why}\n`);
+    } else {
+      ok = false;
+      res.write(`  capability ${cap} NOT enabled (Apple answered ${r.status}${detail ? `: ${detail}` : ''}) — by hand: developer.apple.com → Identifiers → ${bundleId}${settings ? ' → Sign in with Apple → Configure → Enable as a primary App ID' : ''}\n`);
+    }
   }
   res.write(`\nRemaining one-time (no API exists): App Store Connect → New App → pick ${bundleId} from the bundle-id dropdown. The APNs SSL certificate dialog is the LEGACY push path — never create those; push will use the team APNs key via Firebase.\n`);
-  return res.end('[exit 0]\n');
+  return res.end(`[exit ${ok ? 0 : 1}]\n`);
 }
 
 /** what the wizard writes into the GitHub environment `local` so the
@@ -1413,6 +1641,9 @@ const VAULT_PURPOSE = {
   NAS_LOGODEV_PUBLIC_TOKEN: 'logo.dev publishable token (client-side logo images).',
   LOGTO_GOOGLE_CLIENT_ID: 'Google OAuth client id for “Sign in with Google”.',
   LOGTO_GOOGLE_CLIENT_SECRET: 'Google OAuth client secret — pairs with the client id.',
+  APPLE_DEV_CERT_P12: 'The machine’s persistent Apple Development certificate (.p12, base64) — CI imports it instead of minting a throwaway one per build (no more “certificate revoked” mails).',
+  APPLE_DEV_CERT_PASSWORD: 'Password of that .p12 — minted here before the certificate; the mint workflow encrypts with it.',
+  APPLE_DEV_CERT_SERIAL: 'Serial of that certificate — the wizard asks Apple by serial whether it is still valid before each iOS build.',
   LOGTO_APPLE_CLIENT_ID: 'Apple Services ID for “Sign in with Apple”.',
   VAULT_SIGNUPS_ALLOWED: 'Wizard bookkeeping: whether this vault still accepts registrations (closed after setup).',
   PLAY_SERVICE_ACCOUNT_JSON: 'Google Play service account (whole JSON file) — CI publishes builds with it; the wizard also uses it to detect when a store app exists.',
@@ -1620,7 +1851,15 @@ async function validateEndpoint(req, res, validateImpl) {
   for (const [name, value] of Object.entries(body.values ?? {})) {
     if (VALIDATABLE_NAMES.has(name) && typeof value === 'string' && value) values[name] = value;
   }
-  return json(res, 200, await validateImpl(String(body.provider ?? ''), values));
+  // the sign-in callbacks the page wants judged alongside the credentials
+  // (Google/Apple answer a redirect check without a user)
+  const redirectUris = (Array.isArray(body.redirectUris) ? body.redirectUris : [])
+    .filter((u) => typeof u === 'string' && /^https?:\/\/[^\s"'<>]+$/.test(u))
+    .slice(0, 12);
+  // the family's app bundle ids — an App ID pasted as Apple client id is
+  // the classic mix-up, and only the helper knows the ids to compare
+  const iosAppIds = [...new Set(['app.munni', 'app.munni.dev', ...LOCAL_ENVS().map((name) => loadStack(name).native?.iosAppId).filter(Boolean)])];
+  return json(res, 200, await validateImpl(String(body.provider ?? ''), values, { redirectUris, iosAppIds }));
 }
 
 function serveHtml(res, token) {
@@ -1632,8 +1871,306 @@ function serveHtml(res, token) {
   res.end(html);
 }
 
+/* ── the MACHINE owns the Apple Development certificate (same ruling as
+   the upload keystore; user report 2026-09-08: every local iOS build
+   minted a throwaway cert and pruned the older ones — each prune an
+   Apple "certificate revoked" email). Minted ONCE by the repo's
+   mint-apple-cert workflow (a macOS runner: its p12s import cleanly),
+   pulled back here from the run artifact, shipped into every repo's
+   environment local by the wizard before an iOS build. ── */
+const APPLE_CERT_ARTIFACT = 'apple-dev-cert-p12';
+const APPLE_CERT_FILE = 'APPLE_DEV_CERT_P12.b64';
+const APPLE_CERT_SERIAL_FILE = 'APPLE_DEV_CERT_SERIAL.txt';
+const normSerial = (s) => String(s ?? '').trim().toUpperCase().replace(/^0+/, '');
+
+/** does Apple still list the machine's certificate? A revoked or expired
+ *  p12 imports without a word and CI would mint throwaways until Apple's
+ *  cap (2026-09-09: the wizard's first mint had wiped the hosted track's
+ *  certificate; ten piled up in a day) — matched by serial */
+async function appleCertAtApple(values, fetchImpl) {
+  if (!values.APPLE_DEV_CERT_SERIAL) return { state: 'unknown' }; // imported before the mint recorded serials
+  if (!values.ASC_KEY_ID || !values.ASC_ISSUER_ID || !values.ASC_KEY_P8) return { state: 'no-creds' };
+  try {
+    const res = await fetchImpl('https://api.appstoreconnect.apple.com/v1/certificates?filter%5BcertificateType%5D=DEVELOPMENT,IOS_DEVELOPMENT&limit=200', {
+      headers: { authorization: `Bearer ${ascJwt(values)}` },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) return { state: 'error', detail: `App Store Connect answered ${res.status}` };
+    const want = normSerial(values.APPLE_DEV_CERT_SERIAL);
+    const hit = ((await res.json()).data ?? []).find((c) => normSerial(c.attributes?.serialNumber) === want);
+    if (!hit) return { state: 'missing' };
+    const expires = hit.attributes.expirationDate;
+    if (new Date(expires).getTime() < Date.now()) return { state: 'expired', expires };
+    return { state: 'valid', expires, id: hit.id };
+  } catch (e) {
+    return { state: 'error', detail: e.message };
+  }
+}
+
+async function appleCertStatusEndpoint(res, fetchImpl) {
+  const v = loadLocalValues(loadStack(SHARED_STACK));
+  const out = { present: Boolean(v.APPLE_DEV_CERT_P12 && v.APPLE_DEV_CERT_PASSWORD), password: Boolean(v.APPLE_DEV_CERT_PASSWORD) };
+  if (v.APPLE_DEV_CERT_SERIAL) out.serial = v.APPLE_DEV_CERT_SERIAL;
+  if (out.present) out.apple = await appleCertAtApple(v, fetchImpl);
+  return json(res, 200, out);
+}
+
+/** Apple revoked or expired the machine's certificate: drop it so the
+ *  next iOS build mints again (the wizard calls this by itself) */
+function appleCertForgetEndpoint(res) {
+  const shared = loadStack(SHARED_STACK);
+  const next = { ...loadLocalValues(shared) };
+  delete next.APPLE_DEV_CERT_P12;
+  delete next.APPLE_DEV_CERT_SERIAL;
+  saveLocalValues(shared, next);
+  return json(res, 200, { ok: true });
+}
+
+/** the p12 password is minted HERE first — the mint workflow encrypts with it */
+function appleCertPasswordEndpoint(res) {
+  const shared = loadStack(SHARED_STACK);
+  const v = loadLocalValues(shared);
+  if (!v.APPLE_DEV_CERT_PASSWORD) saveLocalValues(shared, { ...v, APPLE_DEV_CERT_PASSWORD: randomBytes(24).toString('hex') });
+  return json(res, 200, { ok: true });
+}
+
+/** pull the minted p12 out of the workflow run's artifact into the store */
+async function appleCertImportEndpoint(req, res, netFetchImpl) {
+  const body = await readBody(req);
+  const slug = String(body.slug ?? '');
+  const runId = Number(body.runId);
+  res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-cache' });
+  if (!/^[\w.-]+\/[\w.-]+$/.test(slug) || !Number.isInteger(runId) || runId <= 0) {
+    res.write('need the repo slug and the mint run id\n');
+    return res.end('[exit 1]\n');
+  }
+  const shared = loadStack(SHARED_STACK);
+  const values = loadLocalValues(shared);
+  if (!values.IAC_GH_PAT) {
+    res.write('no GitHub token in the machine store — press Store as IAC_GH_PAT on the GitHub tile first\n');
+    return res.end('[exit 1]\n');
+  }
+  const api = (path, init = {}) => netFetchImpl(`https://api.github.com${path}`, {
+    ...init,
+    headers: { authorization: `Bearer ${values.IAC_GH_PAT}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', ...init.headers },
+    signal: AbortSignal.timeout(30000),
+  });
+  try {
+    const list = await api(`/repos/${slug}/actions/runs/${runId}/artifacts`);
+    if (!list.ok) throw new Error(`GitHub answered ${list.status} listing the run's artifacts`);
+    const art = ((await list.json()).artifacts ?? []).find((a) => a.name === APPLE_CERT_ARTIFACT);
+    if (!art) throw new Error(`run ${runId} carries no ${APPLE_CERT_ARTIFACT} artifact — did the mint job fail? (its Preflight names the missing secret)`);
+    // the archive url 302s to blob storage, which refuses a forwarded
+    // Authorization header — hop by hand
+    const hop = await api(`/repos/${slug}/actions/artifacts/${art.id}/zip`, { redirect: 'manual' });
+    const location = hop.headers?.get?.('location');
+    const zipRes = location ? await netFetchImpl(location, { signal: AbortSignal.timeout(60000) }) : hop;
+    if (!zipRes.ok) throw new Error(`artifact download failed (${zipRes.status})`);
+    const zip = Buffer.from(await zipRes.arrayBuffer());
+    const b64 = zipEntry(zip, APPLE_CERT_FILE).toString('utf8').trim();
+    if (!/^[A-Za-z0-9+/=]{100,}$/.test(b64)) throw new Error('the artifact does not look like a base64 p12');
+    // the serial rides along since 2026-09-09 (older mints: none → the
+    // validity check reports unknown; CI's own check still guards)
+    const serial = zipNames(zip).includes(APPLE_CERT_SERIAL_FILE) ? normSerial(zipEntry(zip, APPLE_CERT_SERIAL_FILE).toString('utf8')) : '';
+    const next = { ...loadLocalValues(shared), APPLE_DEV_CERT_P12: b64 };
+    delete next.APPLE_DEV_CERT_SERIAL;
+    if (serial) next.APPLE_DEV_CERT_SERIAL = serial;
+    saveLocalValues(shared, next);
+    res.write(`Apple Development certificate stored in the machine store ✓${serial ? ` (serial ${serial})` : ''} — every repo's iOS builds sign with it from now on (the whole Apple team shares this one certificate); nothing gets minted or revoked anymore. Apple expires it after a year — the wizard notices and mints again by itself\n`);
+    return res.end('[exit 0]\n');
+  } catch (e) {
+    res.write(`${e.message}\n`);
+    return res.end('[exit 1]\n');
+  }
+}
+
+/* ── keeps itself up to date (user ruling 2026-09-08: the wizard is a
+   ONE-TIME bootstrap — afterwards CI/CD must update everything). The NAS
+   pulls a bundle through the DSM poller; a PC cannot be pushed to
+   either, so the helper IS the poller: fetch this checkout's branch,
+   fast-forward when the tree is clean, re-render every stack after a
+   pull, pull the (mutable channel) images, bring the family up, and
+   restart itself once its own code moved. Nothing is pushed here. ── */
+const AUTONOMY_TASK = 'munni local helper';
+const AUTONOMY_MIN_MINUTES = 2;
+let autonomyRunning = false;
+let autonomyLastLog = '';
+let autonomyTimer = null;
+let autonomyDeps = null; // set by main only — tests never arm timers
+let autonomyNextAt = null;
+
+/** run a command quietly and hand back its output */
+const capture = (spawnImpl, cmd, args, opts = {}) => stepRunner(spawnImpl)({ write() {} }, '', cmd, args, opts);
+
+async function autonomyCycle(res, spawnImpl, restartImpl) {
+  const log = { text: '' };
+  const out = { write(s) { log.text = (log.text + String(s)).slice(-20000); res?.write(s); } };
+  if (autonomyRunning) {
+    out.write('an update check is already running\n');
+    return { code: 1 };
+  }
+  autonomyRunning = true;
+  const run = stepRunner(spawnImpl);
+  const git = (label, args) => run(out, label, 'git', args, { cwd: ROOT });
+  const result = { at: new Date().toISOString(), branch: null, pulled: false, paused: null, changed: [], failed: [] };
+  try {
+    result.branch = (await git('which branch does this checkout follow?', ['rev-parse', '--abbrev-ref', 'HEAD'])).out.trim() || 'HEAD';
+    const dirty = (await git('uncommitted changes?', ['status', '--porcelain', '--untracked-files=no'])).out.trim();
+    const fetched = await git(`fetch origin/${result.branch}`, ['fetch', '--quiet', 'origin', result.branch]);
+    if (fetched.code !== 0) {
+      result.paused = 'origin unreachable (offline?) — images still update';
+    } else {
+      const behind = Number((await git('commits behind origin', ['rev-list', '--count', `HEAD..origin/${result.branch}`])).out.trim()) || 0;
+      if (behind && dirty) {
+        result.paused = `${behind} new commit(s) on origin/${result.branch}, but this checkout has uncommitted changes (${dirty.split('\n').length} file(s)) — the pull waits for a clean tree; images still update`;
+      } else if (behind) {
+        const pull = await git(`pull ${behind} commit(s) (fast-forward only)`, ['pull', '--ff-only', '--quiet', 'origin', result.branch]);
+        if (pull.code === 0) result.pulled = true;
+        else result.paused = 'the pull failed (diverged history?) — fix it by hand, images still update';
+      } else {
+        out.write(`up to date with origin/${result.branch}\n`);
+      }
+    }
+    for (const name of LOCAL_STACKS()) {
+      if (!existsSync(join(renderedDir(name), `.env.${name}`))) {
+        out.write(`${name}: not set up yet — skipped\n`);
+        continue;
+      }
+      if (result.pulled) {
+        // templates only change through a pull — re-render from the store then
+        const render = await run(out, `re-render ${name}`, process.execPath, [join(ROOT, 'infra', 'bootstrap.mjs'), '--stack', name], { cwd: ROOT });
+        if (render.code !== 0) {
+          result.failed.push(`${name} (render)`);
+          continue;
+        }
+      }
+      const pull = await run(out, `pull ${name}'s images (channel tags move)`, 'docker', [...composeArgs(name), 'pull', '--quiet'], { cwd: renderedDir(name) });
+      if (pull.code !== 0) result.failed.push(`${name} (image pull)`);
+      const up = await run(out, `bring ${name} up`, 'docker', [...composeArgs(name), 'up', '-d', '--remove-orphans'], { cwd: renderedDir(name) });
+      if (up.code !== 0) result.failed.push(`${name} (up)`);
+      for (const m of up.out.matchAll(/Container (\S+)\s+(?:Recreated|Started)/g)) {
+        if (!result.changed.includes(m[1])) result.changed.push(m[1]);
+      }
+    }
+    saveAutonomy({ ...loadAutonomy(), lastCheckAt: result.at, lastResult: result });
+    const verdict = [
+      result.paused ? `paused: ${result.paused}` : (result.pulled ? 'code pulled' : 'code unchanged'),
+      result.changed.length ? `restarted: ${result.changed.join(', ')}` : 'containers unchanged',
+      ...(result.failed.length ? [`FAILED: ${result.failed.join(', ')}`] : []),
+    ].join('; ');
+    out.write(`\n${verdict}\n`);
+    if (result.pulled && restartImpl) {
+      out.write('the helper restarts itself to run the new code — reload this page in a few seconds\n');
+      setTimeout(restartImpl, 1500);
+    }
+    return { code: result.failed.length ? 1 : 0, result };
+  } finally {
+    autonomyLastLog = log.text;
+    autonomyRunning = false;
+  }
+}
+
+function rearmAutonomy() {
+  if (!autonomyDeps) return;
+  clearInterval(autonomyTimer);
+  autonomyTimer = null;
+  autonomyNextAt = null;
+  const state = loadAutonomy();
+  if (!state.enabled) return;
+  const every = Math.max(AUTONOMY_MIN_MINUTES, Number(state.intervalMinutes) || 10) * 60000;
+  const tick = () => {
+    autonomyNextAt = new Date(Date.now() + every).toISOString();
+    return autonomyCycle(null, autonomyDeps.spawnImpl, autonomyDeps.restartImpl).catch(() => {});
+  };
+  autonomyTimer = setInterval(tick, every);
+  autonomyTimer.unref?.();
+  // a logon start (or turning it on) applies what landed meanwhile soon,
+  // not a full interval later
+  setTimeout(tick, 45000).unref?.();
+  autonomyNextAt = new Date(Date.now() + 45000).toISOString();
+}
+
+/** main hands the real spawn + the self-restart in; tests never call this */
+export function armAutonomy(deps) {
+  autonomyDeps = deps;
+  rearmAutonomy();
+}
+
+// Task Scheduler through the built-in PowerShell module: schtasks.exe
+// refuses an ONLOGON trigger without elevation ("Access is denied",
+// found live 2026-09-08), Register-ScheduledTask registers a task for
+// the current user's own logon as a plain user
+const PS = 'powershell.exe';
+const psArgs = (script) => ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script];
+const taskExists = async (spawnImpl) => process.platform === 'win32'
+  ? (await capture(spawnImpl, PS, psArgs(`Get-ScheduledTask -TaskName '${AUTONOMY_TASK}' -ErrorAction Stop | Out-Null`), { cwd: ROOT })).code === 0
+  : null;
+
+async function autonomyStatusEndpoint(res, spawnImpl) {
+  const state = loadAutonomy();
+  const branch = (await capture(spawnImpl, 'git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT })).out.trim() || null;
+  return json(res, 200, {
+    ...state,
+    running: autonomyRunning,
+    armed: Boolean(autonomyTimer),
+    nextCheckAt: autonomyNextAt,
+    logonTask: await taskExists(spawnImpl),
+    branch,
+    checkout: ROOT,
+    lastLog: autonomyLastLog.slice(-4000),
+  });
+}
+
+async function autonomySetEndpoint(req, res) {
+  const body = await readBody(req);
+  const state = loadAutonomy();
+  if (typeof body.enabled === 'boolean') state.enabled = body.enabled;
+  if (Number.isFinite(Number(body.intervalMinutes)) && Number(body.intervalMinutes) >= AUTONOMY_MIN_MINUTES) state.intervalMinutes = Math.round(Number(body.intervalMinutes));
+  saveAutonomy(state);
+  rearmAutonomy();
+  return json(res, 200, { ...state, armed: Boolean(autonomyTimer), nextCheckAt: autonomyNextAt });
+}
+
+async function autonomyRunEndpoint(res, spawnImpl, restartImpl) {
+  res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-cache' });
+  const { code } = await autonomyCycle(res, spawnImpl, restartImpl);
+  return res.end(`\n[exit ${code}]\n`);
+}
+
+/** Task Scheduler (built-in, current user, no admin): the helper starts
+ * at every logon from autonomy.cmd — minimized, no browser tab */
+async function autonomyLogonEndpoint(req, res, spawnImpl) {
+  const body = await readBody(req);
+  res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-cache' });
+  if (process.platform !== 'win32') {
+    res.write('the logon task is Windows-only (Task Scheduler) — on macOS/Linux start the helper from a login item or a user service\n');
+    return res.end('[exit 1]\n');
+  }
+  const run = stepRunner(spawnImpl);
+  if (body.install === false) {
+    const del = await run(res, 'remove the logon task', PS, psArgs(`Unregister-ScheduledTask -TaskName '${AUTONOMY_TASK}' -Confirm:$false -ErrorAction Stop`), { cwd: ROOT });
+    if (del.code === 0) res.write('the helper no longer starts at logon (a running one keeps running until you close it)\n');
+    return res.end(`\n[exit ${del.code === 0 ? 0 : 1}]\n`);
+  }
+  const cmdFile = join(DIR, 'autonomy.cmd').replaceAll("'", "''");
+  const script = [
+    '$t = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME',
+    `$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c start /min ' + [char]34 + 'munni helper' + [char]34 + ' ' + [char]34 + '${cmdFile}' + [char]34)`,
+    '$p = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited',
+    `Register-ScheduledTask -TaskName '${AUTONOMY_TASK}' -Trigger $t -Action $a -Principal $p -Force -ErrorAction Stop | Out-Null`,
+    "'registered'",
+  ].join('; ');
+  const create = await run(res, 'register the logon task (Task Scheduler, current user, no admin needed)', PS, psArgs(script), { cwd: ROOT });
+  if (create.code !== 0) {
+    res.write('registering failed — open Task Scheduler once to see whether tasks may be created for this user\n');
+    return res.end('[exit 1]\n');
+  }
+  res.write(`the helper now starts at every logon from ${cmdFile} (minimized window, no browser tab) — with automatic updates on it keeps the family current by itself\n`);
+  return res.end('[exit 0]\n');
+}
+
 /** build the handler; spawn/probe/validate deps injectable for tests */
-export function createApp({ token, probeImpl = probe, runImpl = runToStream, validateImpl = validate, spawnImpl = spawn, vaultFetchImpl = insecureFetch, netFetchImpl = localAwareFetch } = {}) {
+export function createApp({ token, probeImpl = probe, runImpl = runToStream, validateImpl = validate, spawnImpl = spawn, vaultFetchImpl = insecureFetch, netFetchImpl = localAwareFetch, restartImpl = null } = {}) {
   const routes = {
     'GET /api/local/status': (req, res) => statusEndpoint(res, probeImpl),
     'POST /api/local/run': (req, res) => runEndpoint(req, res, runImpl),
@@ -1647,11 +2184,21 @@ export function createApp({ token, probeImpl = probe, runImpl = runToStream, val
     'GET /api/local/cleanup-check': (req, res) => cleanupCheckEndpoint(res, spawnImpl),
     'POST /api/local/store-retire': (req, res) => storeRetireEndpoint(req, res, netFetchImpl),
     'GET /api/local/store-status': (req, res) => storeStatusEndpoint(res, new URL(req.url, 'http://localhost'), netFetchImpl),
-    'POST /api/local/firebase-setup': (req, res) => firebaseSetupEndpoint(req, res, netFetchImpl),
+    'POST /api/local/firebase-setup': (req, res) => firebaseSetupEndpoint(req, res, netFetchImpl, spawnImpl),
     'POST /api/local/ios-appid': (req, res) => iosAppIdEndpoint(req, res, netFetchImpl),
     'POST /api/local/mint-keystore': (req, res) => mintKeystoreEndpoint(req, res, spawnImpl),
+    'GET /api/local/apple-cert': (req, res) => appleCertStatusEndpoint(res, netFetchImpl),
+    'POST /api/local/apple-cert/password': (req, res) => appleCertPasswordEndpoint(res),
+    'POST /api/local/apple-cert/forget': (req, res) => appleCertForgetEndpoint(res),
+    'POST /api/local/apple-cert/import': (req, res) => appleCertImportEndpoint(req, res, netFetchImpl),
+    'GET /api/local/autonomy': (req, res) => autonomyStatusEndpoint(res, spawnImpl),
+    'POST /api/local/autonomy': (req, res) => autonomySetEndpoint(req, res),
+    'POST /api/local/autonomy/run': (req, res) => autonomyRunEndpoint(res, spawnImpl, restartImpl),
+    'POST /api/local/autonomy/logon': (req, res) => autonomyLogonEndpoint(req, res, spawnImpl),
     'POST /api/local/new-store-package': (req, res) => newStorePackageEndpoint(req, res, spawnImpl),
     'POST /api/local/trust-ca': (req, res) => trustCaEndpoint(res, spawnImpl, netFetchImpl),
+    'GET /api/local/ca-trust': (req, res) => caTrustEndpoint(res, new URL(req.url, 'http://localhost'), netFetchImpl, spawnImpl),
+    'GET /api/local/registry': (req, res) => registryEndpoint(res, new URL(req.url, 'http://localhost'), netFetchImpl),
     'POST /api/local/gh-pat': (req, res) => ghPatEndpoint(req, res),
     'GET /api/local/secrets': (req, res) => secretsEndpoint(res),
     'GET /api/local/vault-export': (req, res) => vaultExportEndpoint(res),
@@ -1697,9 +2244,28 @@ async function isRunningHelper(port) {
   }
 }
 
+/** hand over to a fresh process running the just-pulled code: stop
+ * listening first (the double-start guard would otherwise see THIS
+ * helper and exit the new one), let the event loop drain, and fall back
+ * to a hard exit only if something keeps it alive */
+function restartHelper(server) {
+  clearInterval(autonomyTimer);
+  autonomyTimer = null;
+  server.close();
+  server.closeAllConnections?.();
+  spawn(process.execPath, [fileURLToPath(import.meta.url)], {
+    detached: true,
+    stdio: 'ignore',
+    shell: false,
+    env: { ...process.env, SETUP_NO_OPEN: '1', SETUP_RESTART_WAIT: '1500' },
+  }).unref();
+  setTimeout(() => process.exit(0), 3000).unref();
+}
+
 function startHelper(port, attemptsLeft) {
   const token = randomBytes(16).toString('hex');
-  const server = createServer(createApp({ token }));
+  let server = null;
+  server = createServer(createApp({ token, restartImpl: () => restartHelper(server) }));
   server.requestTimeout = 0; // compose builds stream for many minutes
   server.on('error', async (err) => {
     if (err.code !== 'EADDRINUSE') throw err;
@@ -1723,9 +2289,12 @@ function startHelper(port, attemptsLeft) {
     console.log(`munni setup helper ready → ${url}`);
     console.log('(the page it serves can now run the local setup for you; Ctrl+C stops the helper)');
     openBrowser(url);
+    armAutonomy({ spawnImpl: spawn, restartImpl: () => restartHelper(server) });
+    if (loadAutonomy().enabled) console.log('automatic updates are ON — this helper keeps the local family current by itself');
   });
 }
 
 if (isMain) {
-  startHelper(Number(process.env.SETUP_PORT ?? 8377), 3);
+  // a self-restart waits for its predecessor to let go of the port
+  setTimeout(() => startHelper(Number(process.env.SETUP_PORT ?? 8377), 3), Number(process.env.SETUP_RESTART_WAIT ?? 0));
 }
