@@ -35,6 +35,25 @@ export function jwtES256({ header, payload, pem }) {
   return `${input}.${b64url(sig)}`;
 }
 
+/* DSM's SYNO.API.Auth error codes, as the operator meets them (2026-09-10:
+   a bare {"code":402} sent the user hunting) */
+export const DSM_LOGIN_ADVICE = {
+  400: 'no such account, or the password is wrong',
+  401: 'the account is disabled (DSM → Control Panel → User & Group)',
+  402: 'permission denied — the account exists but may not sign in to DSM: Control Panel → User & Group → the deploy user → Applications → allow DSM and File Station; and it must be in the administrators group (reverse-proxy rules need admin rights)',
+  403: '2-step verification is on for this account — turn it off for the deploy user (the login API cannot answer an OTP prompt)',
+  404: 'the 2-step verification code was rejected — turn 2FA off for the deploy user',
+  406: 'DSM enforces 2-factor authentication for this account — exempt the deploy user (Control Panel → Security → Account)',
+  407: 'this address is blocked by DSM auto-block (Control Panel → Security → Account → Auto Block)',
+  408: 'the password expired and this account cannot change it',
+  409: 'the password expired — change it in DSM first',
+  410: 'DSM demands a password change on first sign-in — sign in once in the browser',
+};
+export const dsmLoginAdvice = (message) => {
+  const code = Number(/"code":\s*(\d+)/.exec(String(message ?? ''))?.[1]);
+  return DSM_LOGIN_ADVICE[code] ? ` — code ${code}: ${DSM_LOGIN_ADVICE[code]}` : '';
+};
+
 export const VALIDATORS = {
   /** POST token/new — the exact call GoCardlessApi makes */
   async gocardless(values, fetchImpl) {
@@ -110,6 +129,20 @@ export const VALIDATORS = {
   },
 
   /** sk_ search auth + pk_ image fetch — mirrors LogoEndpoints incl. the swap check */
+  /** the registry pull token — GitHub names the user and the scopes of a
+   *  classic PAT; the page's own check needs the pasted value, this twin
+   *  lets "Check all" verify the STORED one through the helper */
+  async ghcr(values, fetchImpl) {
+    const gap = need(values, ['NAS_GHCR_PAT']);
+    if (gap) return { ok: false, detail: gap };
+    const res = await fetchImpl('https://api.github.com/user', { headers: { authorization: `Bearer ${values.NAS_GHCR_PAT}`, accept: 'application/vnd.github+json' }, signal: T() });
+    if (!res.ok) return { ok: false, detail: `GitHub rejected the token (${res.status})` };
+    const scopes = res.headers?.get?.('x-oauth-scopes') ?? '';
+    const login = (await res.json()).login;
+    if (!/(read|write):packages/.test(scopes)) return { ok: false, detail: `the token authenticates as ${login} but lacks read:packages (scopes: ${scopes || 'none — is it fine-grained? use classic here'})` };
+    return { ok: true, detail: `valid — ${login}, scopes: ${scopes}` };
+  },
+
   async logodev(values, fetchImpl) {
     const gap = need(values, ['NAS_LOGODEV_SECRET_KEY', 'NAS_LOGODEV_PUBLIC_TOKEN']);
     if (gap) return { ok: false, detail: gap };
@@ -124,7 +157,7 @@ export const VALIDATORS = {
   },
 
   /** dummy-code trick: invalid_client = bad creds, any other error = client is real */
-  async google(values, fetchImpl) {
+  async google(values, fetchImpl, { redirectUris = [] } = {}) {
     const gap = need(values, ['LOGTO_GOOGLE_CLIENT_ID', 'LOGTO_GOOGLE_CLIENT_SECRET']);
     if (gap) return { ok: false, detail: gap };
     const res = await fetchImpl('https://oauth2.googleapis.com/token', {
@@ -141,13 +174,25 @@ export const VALIDATORS = {
     });
     const body = await res.json().catch(() => ({}));
     if (body.error === 'invalid_client') return { ok: false, detail: 'Google says invalid_client — the id/secret pair is wrong' };
-    return { ok: true, detail: `Google recognized the OAuth client (dummy code rejected with "${body.error ?? res.status}", as expected)` };
+    const refused = await refusedRedirects(googleRedirectProbe, values.LOGTO_GOOGLE_CLIENT_ID, redirectUris, fetchImpl);
+    if (refused.length) {
+      return { ok: true, warn: true, detail: `the client is real, but Google refuses ${refused.map((p) => `${p.uri} (${p.code})`).join(', ')} — add it under Authorized redirect URIs of the OAuth client, then Check again` };
+    }
+    return { ok: true, detail: `Google recognized the OAuth client${redirectUris.length ? ` and accepts all ${redirectUris.length} redirect URI(s)` : ''} (dummy code rejected with "${body.error ?? res.status}", as expected)` };
   },
 
   /** ES256 client-secret JWT + the same dummy-code trick against Apple */
-  async apple(values, fetchImpl) {
+  async apple(raw, fetchImpl, { redirectUris = [], iosAppIds = [] } = {}) {
+    // the Team ID is the TestFlight card's Team ID — one membership
+    const values = { ...raw, LOGTO_APPLE_TEAM_ID: raw.LOGTO_APPLE_TEAM_ID || raw.APPLE_TEAM_ID };
     const gap = need(values, ['LOGTO_APPLE_CLIENT_ID', 'LOGTO_APPLE_TEAM_ID', 'LOGTO_APPLE_KEY_ID', 'LOGTO_APPLE_PRIVATE_KEY']);
     if (gap) return { ok: false, detail: gap };
+    // the App ID passes the token check (native flow) yet can never carry
+    // a return URL — Apple's web flow wants the SERVICES ID (user pasted
+    // app.munni.local.prod, found live 2026-09-09: invalid_request)
+    if (iosAppIds.includes(values.LOGTO_APPLE_CLIENT_ID)) {
+      return { ok: false, detail: `${values.LOGTO_APPLE_CLIENT_ID} is the App ID (the app bundle) — Sign in with Apple on the web needs the SERVICES ID identifier: developer.apple.com → Identifiers → Services IDs, the one whose Sign in with Apple configuration carries the domain + return URL (e.g. app.munni.local.signin)` };
+    }
     const now = Math.floor(Date.now() / 1000);
     let clientSecret;
     try {
@@ -172,7 +217,15 @@ export const VALIDATORS = {
     });
     const body = await res.json().catch(() => ({}));
     if (body.error === 'invalid_client') return { ok: false, detail: 'Apple says invalid_client — check Services ID, Team ID, Key ID and the .p8 contents together' };
-    return { ok: true, detail: `Apple recognized the client (dummy code rejected with "${body.error ?? res.status}", as expected)` };
+    const refused = await refusedRedirects(appleRedirectProbe, values.LOGTO_APPLE_CLIENT_ID, redirectUris, fetchImpl);
+    if (refused.length) {
+      const named = refused.map((p) => `${p.uri} (${p.code}${p.message ? `: ${p.message}` : ''})`).join(', ');
+      const hint = refused.some((p) => p.code === 'invalid_request')
+        ? 'Apple answers invalid_request when the client id is not a Services ID, or when the Services ID’s web configuration was never saved (Configure → Done → Continue → Save)'
+        : 'add the domain + return URL to the Services ID (Sign in with Apple → Configure → Done → Continue → Save)';
+      return { ok: true, warn: true, detail: `the client is real, but Apple refuses ${named} — ${hint}, then Check again` };
+    }
+    return { ok: true, detail: `Apple recognized the client${redirectUris.length ? ` and accepts all ${redirectUris.length} return URL(s)` : ''} (dummy code rejected with "${body.error ?? res.status}", as expected)` };
   },
 
   /** parse the Play service account + mint an androidpublisher-scoped
@@ -245,12 +298,13 @@ export const VALIDATORS = {
   async synology(values) {
     const gap = need(values, ['SYNOLOGY_URL', 'SYNOLOGY_USER', 'SYNOLOGY_PASS']);
     if (gap) return { ok: false, detail: gap };
+    if (values.SYNOLOGY_PATH && !values.SYNOLOGY_PATH.startsWith('/')) return { ok: false, detail: `SYNOLOGY_PATH must be absolute — the shared-folder path bundles land in, e.g. /docker/munni/published (yours: ${values.SYNOLOGY_PATH})` };
     try {
       const { sid } = await dsmLogin(values.SYNOLOGY_URL, values.SYNOLOGY_USER, values.SYNOLOGY_PASS);
       await dsmLogout(values.SYNOLOGY_URL, sid);
       return { ok: true, detail: 'DSM accepted the login (remember: the account needs admin rights, 2FA off)' };
     } catch (e) {
-      return { ok: false, detail: `DSM refused the login: ${e.message}` };
+      return { ok: false, detail: `DSM refused the login: ${e.message}${dsmLoginAdvice(e.message)}` };
     }
   },
 
@@ -290,14 +344,51 @@ export const VALIDATORS = {
   },
 };
 
+/* ── redirect registration probes (user ask 2026-09-09: automate the
+   OAuth setup — neither Google nor Apple offers an API that CREATES a
+   client / Services ID, but both authorization endpoints judge a
+   redirect WITHOUT a user, so the wizard can at least verify every
+   environment's callback the moment the credentials are pasted). ── */
+
+/** Google: a refused request 302s to /signin/oauth/error whose authError
+ * is a base64url proto that starts with the error code
+ * (redirect_uri_mismatch, invalid_client, …); an accepted one lands on
+ * the sign-in page instead */
+async function googleRedirectProbe(clientId, uri, fetchImpl) {
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(uri)}&response_type=code&scope=openid`;
+  const res = await fetchImpl(url, { redirect: 'manual', signal: T() });
+  const location = res.headers?.get?.('location') ?? '';
+  if (!location.includes('/signin/oauth/error')) return { uri, ok: true };
+  const raw = /authError=([^&]+)/.exec(location)?.[1] ?? '';
+  const decoded = Buffer.from(decodeURIComponent(raw).replaceAll('-', '+').replaceAll('_', '/'), 'base64').toString('latin1');
+  return { uri, ok: false, code: /([a-z][a-z_]{4,})/.exec(decoded)?.[1] ?? 'refused' };
+}
+
+/** Apple: the authorize page embeds {"errorCode":"invalid_client"} (or
+ * another code) when it will not proceed; a clean sign-in page otherwise */
+async function appleRedirectProbe(clientId, uri, fetchImpl) {
+  const url = `https://appleid.apple.com/auth/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(uri)}&response_type=code&response_mode=form_post&scope=name%20email`;
+  const res = await fetchImpl(url, { redirect: 'manual', signal: T() });
+  const text = res.status >= 300 && res.status < 400 ? (res.headers?.get?.('location') ?? '') : await res.text();
+  const code = /"errorCode":"([a-z_]+)"/.exec(text)?.[1] ?? /[?&]error=([a-z_]+)/.exec(text)?.[1];
+  const message = /"errorMessage":"([^"]{1,120})"/.exec(text)?.[1];
+  return code ? { uri, ok: false, code, message } : { uri, ok: true };
+}
+
+/** every refused uri — a probe that cannot be reached counts as accepted (never block on Google's hiccup) */
+async function refusedRedirects(probe, clientId, uris, fetchImpl) {
+  const results = await Promise.all(uris.map((uri) => probe(clientId, uri, fetchImpl).catch(() => ({ uri, ok: true }))));
+  return results.filter((r) => !r.ok);
+}
+
 // localAwareFetch: public providers stay strictly verified; the two
 // LOCAL validators (logto-m2m, glitchtip-token) hit our own family
 // urls, which under LAN mode are https signed by the local Caddy CA
-export async function validate(provider, values, { fetchImpl = localAwareFetch } = {}) {
+export async function validate(provider, values, { fetchImpl = localAwareFetch, redirectUris = [], iosAppIds = [] } = {}) {
   const fn = VALIDATORS[provider];
   if (!fn) return { ok: false, detail: `no validator for "${provider}"` };
   try {
-    return await fn(values ?? {}, fetchImpl);
+    return await fn(values ?? {}, fetchImpl, { redirectUris, iosAppIds });
   } catch (e) {
     return { ok: false, unreachable: true, detail: `could not reach the provider (${e.cause?.code ?? e.message})` };
   }
