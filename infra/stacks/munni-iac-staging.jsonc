@@ -17,7 +17,8 @@
     // shared with the prod twin (pair-level services)
     "logto": "logto-iac",
     "logtoAdmin": "logto-iac-admin",
-    "glitchtip": "glitchtip-iac"
+    "glitchtip": "glitchtip-iac",
+    "vault": "vault-iac"
   },
 
   "ports": {
