@@ -14,6 +14,9 @@ permissions:
 
 jobs:
   analyze:
+    # first-boot latch: fresh repo copies skip every run until the
+    # wizard marks the repo initialized (variable MUNNI_INITIALIZED)
+    if: ${{ vars.MUNNI_INITIALIZED == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
