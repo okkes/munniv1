@@ -31,6 +31,12 @@ export const SHARED_LOCAL_NAMES = new Set([
   'NAS_LOGODEV_PUBLIC_TOKEN',
   'LOGTO_GOOGLE_CLIENT_ID',
   'LOGTO_GOOGLE_CLIENT_SECRET',
+  // one Apple Services ID + key serves every environment's sign-in
+  // (the local track got real https with LAN mode, 2026-09-08)
+  'LOGTO_APPLE_CLIENT_ID',
+  'LOGTO_APPLE_TEAM_ID',
+  'LOGTO_APPLE_KEY_ID',
+  'LOGTO_APPLE_PRIVATE_KEY',
   'NAS_GLITCHTIP_EMAIL_URL',
   'NAS_GLITCHTIP_SECRET_KEY',
   'NAS_PGADMIN_PASSWORD',
@@ -56,6 +62,12 @@ export const SHARED_LOCAL_NAMES = new Set([
   'ANDROID_KEYSTORE_PASSWORD',
   'ANDROID_KEY_ALIAS',
   'ANDROID_KEY_PASSWORD',
+  // the MACHINE-owned Apple Development certificate (minted once via
+  // the repo's mint workflow — CI stops minting throwaway certs and
+  // Apple stops mailing "certificate revoked", 2026-09-08)
+  'APPLE_DEV_CERT_P12',
+  'APPLE_DEV_CERT_PASSWORD',
+  'APPLE_DEV_CERT_SERIAL',
 ]);
 
 /** generated names the shared stack mints (env stacks never do) */
