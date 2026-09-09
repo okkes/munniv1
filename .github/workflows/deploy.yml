@@ -37,7 +37,21 @@ jobs:
       # (all of iOS is WebKit — its layout bugs are invisible to Blink).
       # Installing on the ephemeral runner is the cheap path here; the
       # local equivalent is dockerized instead: deploy/webkit-e2e.ps1
-      - run: npx playwright install --with-deps chromium webkit
+      # The runner image preconfigures Google's Chrome apt repository, and
+      # its index regularly mismatches its Release file ("Hash Sum
+      # mismatch", twice on 2026-09-09) — apt-get update, which
+      # --with-deps runs, fails on ANY broken source. Playwright brings its
+      # own browsers, so that repository is dead weight here: drop it on
+      # the ephemeral runner, then install with retries for the mirrors
+      # that remain.
+      - run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list /etc/apt/sources.list.d/google-chrome*.sources
+          for attempt in 1 2 3; do
+            npx playwright install --with-deps chromium webkit && exit 0
+            echo "playwright install failed (attempt $attempt) — retrying in 30 s"
+            sleep 30
+          done
+          exit 1
         working-directory: apps/web
 
       # Unit tests with coverage (finance app: correctness paths must be covered)
