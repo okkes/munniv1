@@ -167,8 +167,17 @@ async function localApplyLogto(values) {
     }
     saveLocalValues(stack, values);
     console.log(`  logto: apps upserted (web ${apps.web.id}, admin ${apps.admin.id}, native ${apps.native.id})`);
+    // the social credentials live in the family store — surface them for
+    // the connector module, which reads the environment: headless
+    // re-renders (the helper's update loop, the push-sender apply) carry
+    // no wizard values, and the NAS path keeps its env contract
+    for (const name of ['LOGTO_GOOGLE_CLIENT_ID', 'LOGTO_GOOGLE_CLIENT_SECRET', 'LOGTO_APPLE_CLIENT_ID', 'LOGTO_APPLE_TEAM_ID', 'LOGTO_APPLE_KEY_ID', 'LOGTO_APPLE_PRIVATE_KEY']) {
+      if (!process.env[name] && values[name]) process.env[name] = values[name];
+    }
+    // one Apple membership: the TestFlight card's Team ID serves Sign in with Apple too
+    if (!process.env.LOGTO_APPLE_TEAM_ID && values.APPLE_TEAM_ID) process.env.LOGTO_APPLE_TEAM_ID = values.APPLE_TEAM_ID;
     const social = await applySocialConnectors(pair, creds).catch((e) => ({ applied: [], error: e.message }));
-    console.log(social.applied.length ? `  logto: social connectors applied [${social.applied}]` : '  logto: no social connector credentials — skipped');
+    console.log(social.applied.length ? `  logto: social connectors applied [${social.applied}]${social.renamed?.length ? ` — moved under their fixed ids (${social.renamed.join(', ')}); callbacks: ${Object.values(social.callbacks).join(', ')}` : ''}` : `  logto: no social connector credentials — skipped${social.error ? ` (${social.error})` : ''}`);
     const brand = await applyBranding(pair, creds).catch((e) => ({ error: e.message }));
     console.log(brand.error ? `  logto: branding failed (${brand.error})` : '  logto: sign-in branded (munni logo + colors)');
   } catch (e) {
