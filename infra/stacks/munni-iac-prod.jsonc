@@ -16,7 +16,8 @@
     "admin": "munni-iac-admin",
     "logto": "logto-iac",
     "logtoAdmin": "logto-iac-admin",
-    "glitchtip": "glitchtip-iac"
+    "glitchtip": "glitchtip-iac",
+    "vault": "vault-iac"
   },
 
   // host ports — 82xx block, far from the live stacks (8090s) and
@@ -27,7 +28,8 @@
     "api": 8292,
     "logto": 3101,
     "logtoAdmin": 3102,
-    "glitchtip": 8293
+    "glitchtip": 8293,
+    "vault": 8294
   },
 
   "sharedServices": true, // renders logto + glitchtip + valkey here
