@@ -137,6 +137,31 @@ test('logodev: swap detection first, then search (sk) + image (pk)', async () =>
   assert.match(calls[1].url, /img\.logo\.dev\/google\.com\?token=pk_y/);
 });
 
+test('synology: DSM error codes come with advice; a relative path is refused before any login', async () => {
+  const { dsmLoginAdvice } = await import('../modules/validate.mjs');
+  assert.match(dsmLoginAdvice('DSM SYNO.API.Auth.login failed: {"code":402}'), /code 402: permission denied/);
+  assert.match(dsmLoginAdvice('DSM SYNO.API.Auth.login failed: {"code":400}'), /password is wrong/);
+  assert.equal(dsmLoginAdvice('DSM SYNO.API.Auth.login failed: {"code":999}'), '');
+  const rel = await validate('synology', { SYNOLOGY_URL: 'https://nas.example:5001', SYNOLOGY_USER: 'deploy', SYNOLOGY_PASS: 'x', SYNOLOGY_PATH: 'docker/munni/published' });
+  assert.equal(rel.ok, false);
+  assert.match(rel.detail, /must be absolute/);
+});
+
+test('ghcr: the registry token must authenticate AND carry read:packages', async () => {
+  const mk = (status, scopes) => async () => ({ ok: status < 400, status, headers: { get: (k) => (k === 'x-oauth-scopes' ? scopes : null) }, json: async () => ({ login: 'okkes' }) });
+  const missing = await validate('ghcr', {}, { fetchImpl: mk(200, 'read:packages') });
+  assert.equal(missing.ok, false);
+  const rejected = await validate('ghcr', { NAS_GHCR_PAT: 'ghp_x' }, { fetchImpl: mk(401, '') });
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.detail, /401/);
+  const noScope = await validate('ghcr', { NAS_GHCR_PAT: 'ghp_x' }, { fetchImpl: mk(200, 'repo') });
+  assert.equal(noScope.ok, false);
+  assert.match(noScope.detail, /read:packages/);
+  const good = await validate('ghcr', { NAS_GHCR_PAT: 'ghp_x' }, { fetchImpl: mk(200, 'read:packages, repo') });
+  assert.equal(good.ok, true);
+  assert.match(good.detail, /okkes/);
+});
+
 test('google + apple: the dummy-code trick — invalid_client is the ONLY failure', async () => {
   const badGoogle = await validate('google', { LOGTO_GOOGLE_CLIENT_ID: 'a', LOGTO_GOOGLE_CLIENT_SECRET: 'b' }, { fetchImpl: capture(401, { error: 'invalid_client' }).fetchImpl });
   assert.equal(badGoogle.ok, false);
@@ -155,6 +180,62 @@ test('google + apple: the dummy-code trick — invalid_client is the ONLY failur
   assert.equal(payload.sub, 'app.munni.signin');
   const badApple = await validate('apple', appleValues, { fetchImpl: capture(401, { error: 'invalid_client' }).fetchImpl });
   assert.equal(badApple.ok, false);
+});
+
+test('google + apple: every callback the page names is judged too — a refused one warns and names itself; the Team ID falls back to the TestFlight card', async () => {
+  // Google's authError is a base64url proto whose first field is the error code
+  const authErr = (code) => Buffer.from(`\n${String.fromCharCode(code.length)}${code}\x12\x04oops`, 'latin1').toString('base64url');
+  const uriOf = (url) => decodeURIComponent(/redirect_uri=([^&]+)/.exec(url)[1]);
+  const google = async (url) => {
+    if (url.startsWith('https://oauth2.googleapis.com/token')) return { ok: false, status: 400, json: async () => ({ error: 'invalid_grant' }) };
+    const refused = uriOf(url).includes('munni-dev');
+    const location = refused
+      ? `https://accounts.google.com/signin/oauth/error?authError=${authErr('redirect_uri_mismatch')}&client_id=a`
+      : 'https://accounts.google.com/v3/signin/identifier?flowName=GeneralOAuthFlow';
+    return { ok: false, status: 302, headers: { get: (k) => (k === 'location' ? location : null) }, text: async () => '' };
+  };
+  const uris = ['https://munni-prod-logto.192-168-2-2.sslip.io/callback/google-universal', 'https://munni-dev-logto.192-168-2-2.sslip.io/callback/google-universal'];
+  const creds = { LOGTO_GOOGLE_CLIENT_ID: 'a', LOGTO_GOOGLE_CLIENT_SECRET: 'b' };
+  const g = await validate('google', creds, { fetchImpl: google, redirectUris: uris });
+  assert.equal(g.ok, true, 'the credentials themselves are fine');
+  assert.equal(g.warn, true);
+  assert.match(g.detail, /munni-dev-logto\S* \(redirect_uri_mismatch\)/);
+  assert.doesNotMatch(g.detail, /munni-prod-logto/);
+  const gOk = await validate('google', creds, { fetchImpl: google, redirectUris: [uris[0]] });
+  assert.equal(gOk.warn, undefined);
+  assert.match(gOk.detail, /accepts all 1 redirect URI/);
+  // a probe that cannot be reached never blocks
+  const flaky = async (url) => (url.startsWith('https://oauth2.googleapis.com/token') ? { ok: false, status: 400, json: async () => ({ error: 'invalid_grant' }) } : Promise.reject(new Error('ECONNRESET')));
+  assert.equal((await validate('google', creds, { fetchImpl: flaky, redirectUris: uris })).warn, undefined);
+
+  // Apple embeds {"errorCode":"…"} in its authorize page when it refuses
+  const apple = async (url) => {
+    if (url.startsWith('https://appleid.apple.com/auth/token')) return { ok: false, status: 400, json: async () => ({ error: 'invalid_grant' }) };
+    const refused = uriOf(url).includes('munni-dev');
+    return { ok: true, status: 200, headers: { get: () => null }, text: async () => (refused ? '{"direct":{"errorMessage":"Invalid client.","errorCode":"invalid_client"}}' : '<title>Sign in to Apple Account</title>') };
+  };
+  const appleValues = { LOGTO_APPLE_CLIENT_ID: 'app.munni.signin', APPLE_TEAM_ID: 'TEAM123', LOGTO_APPLE_KEY_ID: 'KEY123', LOGTO_APPLE_PRIVATE_KEY: ecPem() };
+  const a = await validate('apple', appleValues, { fetchImpl: apple, redirectUris: uris.map((u) => u.replace('google', 'apple')) });
+  assert.equal(a.ok, true);
+  assert.equal(a.warn, true);
+  assert.match(a.detail, /munni-dev-logto\S* \(invalid_client: Invalid client\.\)/, 'Apple’s own message rides along');
+  assert.match(a.detail, /Services ID/);
+  // the live 2026-09-09 mix-up: the App ID pasted as client id — named before Apple is even asked
+  const mixup = await validate('apple', { ...appleValues, LOGTO_APPLE_CLIENT_ID: 'app.munni.local.prod' }, { fetchImpl: apple, iosAppIds: ['app.munni', 'app.munni.local.prod'] });
+  assert.equal(mixup.ok, false);
+  assert.match(mixup.detail, /app\.munni\.local\.prod is the App ID .* needs the SERVICES ID identifier/);
+  // Apple's invalid_request (unsaved configuration, or a non-Services client) gets its own hint
+  const unsaved = async (url) => {
+    if (url.startsWith('https://appleid.apple.com/auth/token')) return { ok: false, status: 400, json: async () => ({ error: 'invalid_grant' }) };
+    return { ok: true, status: 200, headers: { get: () => null }, text: async () => '{"direct":{"errorMessage":"Invalid client id or web redirect url.","errorCode":"invalid_request"}}' };
+  };
+  const u = await validate('apple', appleValues, { fetchImpl: unsaved, redirectUris: [uris[0]] });
+  assert.equal(u.warn, true);
+  assert.match(u.detail, /invalid_request: Invalid client id or web redirect url\./);
+  assert.match(u.detail, /never saved \(Configure → Done → Continue → Save\)/);
+  const missingTeam = await validate('apple', { ...appleValues, APPLE_TEAM_ID: undefined }, { fetchImpl: apple });
+  assert.equal(missingTeam.ok, false, 'no Team ID anywhere → named as missing');
+  assert.match(missingTeam.detail, /LOGTO_APPLE_TEAM_ID/);
 });
 
 test('local logto/glitchtip validators target the family stacks (prod logto, shared glitchtip)', async () => {
