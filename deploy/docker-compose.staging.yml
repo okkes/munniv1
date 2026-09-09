@@ -33,6 +33,10 @@ services:
       Cors__Origins__2: capacitor://localhost
       GoCardless__SecretId: ${GOCARDLESS_SECRET_ID}
       GoCardless__SecretKey: ${GOCARDLESS_SECRET_KEY}
+      # #175: staging offers BOTH providers, same as production — this
+      # was missing, which is why the dev build showed only GoCardless
+      EnableBanking__ApplicationId: ${ENABLEBANKING_APPLICATION_ID:-}
+      EnableBanking__PrivateKeyPem: ${ENABLEBANKING_PRIVATE_KEY_PEM:-}
       Push__VapidPublicKey: ${PUSH_VAPID_PUBLIC_KEY:-}
       Push__VapidPrivateKey: ${PUSH_VAPID_PRIVATE_KEY:-}
       Push__Subject: ${PUSH_VAPID_SUBJECT:-mailto:admin@localhost}
