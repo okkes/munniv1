@@ -20,8 +20,8 @@ const originVariants = (url, twinPort) => {
 
 const MGMT_RESOURCE = 'https://default.logto.app/api';
 
-async function mgmtToken(logtoUrl, m2mId, m2mSecret) {
-  const res = await localAwareFetch(`${logtoUrl}/oidc/token`, {
+async function mgmtToken(logtoUrl, m2mId, m2mSecret, fetchImpl = localAwareFetch) {
+  const res = await fetchImpl(`${logtoUrl}/oidc/token`, {
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
@@ -33,8 +33,8 @@ async function mgmtToken(logtoUrl, m2mId, m2mSecret) {
   return (await res.json()).access_token;
 }
 
-async function api(logtoUrl, token, path, init = {}) {
-  const res = await localAwareFetch(`${logtoUrl}/api${path}`, {
+async function api(logtoUrl, token, path, init = {}, fetchImpl = localAwareFetch) {
+  const res = await fetchImpl(`${logtoUrl}/api${path}`, {
     ...init,
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...init.headers },
   });
@@ -120,9 +120,10 @@ export async function applyApps(pairStack, stack, { m2mId, m2mSecret }) {
  * environment. Absent credentials skip that provider — the runbook
  * lists the one-time console steps to mint them.
  */
-export async function applySocialConnectors(pairStack, { m2mId, m2mSecret }) {
+export async function applySocialConnectors(pairStack, { m2mId, m2mSecret }, { fetchImpl = localAwareFetch } = {}) {
   const logtoUrl = pairStack.urls.logto;
-  const token = await mgmtToken(logtoUrl, m2mId, m2mSecret);
+  const token = await mgmtToken(logtoUrl, m2mId, m2mSecret, fetchImpl);
+  const call = (path, init) => api(logtoUrl, token, path, init, fetchImpl);
   const wanted = [];
   const { LOGTO_GOOGLE_CLIENT_ID, LOGTO_GOOGLE_CLIENT_SECRET, LOGTO_APPLE_CLIENT_ID, LOGTO_APPLE_TEAM_ID, LOGTO_APPLE_KEY_ID, LOGTO_APPLE_PRIVATE_KEY } = process.env;
   if (LOGTO_GOOGLE_CLIENT_ID && LOGTO_GOOGLE_CLIENT_SECRET) {
@@ -141,23 +142,34 @@ export async function applySocialConnectors(pairStack, { m2mId, m2mSecret }) {
   }
   if (!wanted.length) return { applied: [] };
 
-  const existing = await api(logtoUrl, token, '/connectors?page_size=100');
+  const existing = await call('/connectors?page_size=100');
   const applied = [];
+  const renamed = [];
   for (const def of wanted) {
     const match = existing.find((c) => c.target === def.target);
-    if (match) {
-      await api(logtoUrl, token, `/connectors/${match.id}`, { method: 'PATCH', body: JSON.stringify({ config: def.config }) });
+    if (match && match.id === def.connectorId) {
+      await call(`/connectors/${match.id}`, { method: 'PATCH', body: JSON.stringify({ config: def.config }) });
     } else {
-      await api(logtoUrl, token, '/connectors', { method: 'POST', body: JSON.stringify({ connectorId: def.connectorId, config: def.config, syncProfile: true }) });
+      // the callback path carries the connector's ID: a generated one
+      // (r72tfa2jqdxd) made every documented /callback/google-universal
+      // a redirect_uri_mismatch (found live 2026-09-09). Logto accepts a
+      // proposed id on creation, so the connector lives under its
+      // factory id — an older instance is replaced; sign-ins are linked
+      // by TARGET, so nobody loses an account
+      if (match) {
+        await call(`/connectors/${match.id}`, { method: 'DELETE' });
+        renamed.push(`${match.id} → ${def.connectorId}`);
+      }
+      await call('/connectors', { method: 'POST', body: JSON.stringify({ id: def.connectorId, connectorId: def.connectorId, config: def.config, syncProfile: true }) });
     }
     applied.push(def.target);
   }
   // surface them on the sign-in screen
-  await api(logtoUrl, token, '/sign-in-exp', {
+  await call('/sign-in-exp', {
     method: 'PATCH',
     body: JSON.stringify({ socialSignInConnectorTargets: applied }),
   });
-  return { applied };
+  return { applied, renamed, callbacks: Object.fromEntries(wanted.map((d) => [d.target, `${logtoUrl}/callback/${d.connectorId}`])) };
 }
 
 /**
