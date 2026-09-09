@@ -58,6 +58,28 @@ export function saveLocalEnvRegistry(envs) {
   writeFileSync(ENV_REGISTRY_FILE(), `${JSON.stringify({ envs }, null, 2)}\n`);
 }
 
+/** the helper's self-update settings + last verdict (user ruling
+ * 2026-09-08: the wizard is a ONE-TIME bootstrap — afterwards the local
+ * family keeps itself current, pulling like the NAS poller does) */
+const AUTONOMY_FILE = () => join(RENDER_DIR(), 'local-autonomy.json');
+export const AUTONOMY_DEFAULTS = Object.freeze({ enabled: false, intervalMinutes: 10, lastCheckAt: null, lastResult: null });
+
+export function loadAutonomy() {
+  const file = AUTONOMY_FILE();
+  if (!existsSync(file)) return { ...AUTONOMY_DEFAULTS };
+  try {
+    return { ...AUTONOMY_DEFAULTS, ...JSON.parse(readFileSync(file, 'utf8')) };
+  } catch {
+    return { ...AUTONOMY_DEFAULTS };
+  }
+}
+
+export function saveAutonomy(state) {
+  const next = { ...AUTONOMY_DEFAULTS, ...state };
+  writeFileSync(AUTONOMY_FILE(), `${JSON.stringify(next, null, 2)}\n`);
+  return next;
+}
+
 function synthesizeLocalEnv(entry) {
   const s = entry.slot;
   return {
