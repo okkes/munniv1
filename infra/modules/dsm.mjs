@@ -52,6 +52,9 @@ export function proxyRules(stack) {
       { host: stack.host('logto'), port: stack.ports.logto },
       { host: stack.host('logtoAdmin'), port: stack.ports.logtoAdmin },
       { host: stack.host('glitchtip'), port: stack.ports.glitchtip },
+      // the pair's Vaultwarden (secrets-access plan SA1) — LAN-restrict
+      // it in the DSM firewall like the *-admin hosts
+      { host: stack.host('vault'), port: stack.ports.vault },
     );
   }
   return rules;
