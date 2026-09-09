@@ -105,6 +105,34 @@ apply_channel() { # apply_channel STAMP BUNDLE MARKER STACKS...
   [ "$ok" = 1 ]
 }
 
+apply_channel_dir() { # apply_channel_dir STAMP BUNDLE MARKER DIR COMPOSE
+  # like apply_channel, but the bundle owns its own directory NEXT TO the
+  # live one (the IaC twins: /volume1/docker/munni-iac-prod …). The bundle
+  # carries its own update.sh; markers stay in $LIVE with the others.
+  stamp="$1"; bundle="$2"; marker="$3"; dir="$4"; compose="$5"
+  [ -f "$PUBLISHED/$stamp" ] || return 0
+  new="$(cat "$PUBLISHED/$stamp")"
+  old="$(cat "$LIVE/$marker" 2>/dev/null || echo none)"
+  [ "$new" = "$old" ] && return 0
+
+  target="$(dirname "$LIVE")/$dir"
+  mkdir -p "$target"
+  log "new deploy $stamp=$new (was $old) — unpacking $bundle into $target"
+  if ! tar -xzf "$PUBLISHED/$bundle" -C "$target"; then
+    log "unpack of $bundle FAILED — leaving $dir untouched"
+    return 1
+  fi
+
+  log "updating $dir/$compose"
+  if sh "$target/update.sh" "$compose" >>"$LOG" 2>&1; then
+    log "$dir/$compose ok"
+    echo "$new" >"$LIVE/$marker"
+  else
+    log "$dir/$compose FAILED (see above) — its previous containers keep running; retried next cycle"
+    return 1
+  fi
+}
+
 rc=0
 # master bundle refreshes prod AND staging (a release moves both stacks)
 apply_channel VERSION munni-deploy.tgz .applied_version \
@@ -112,7 +140,13 @@ apply_channel VERSION munni-deploy.tgz .applied_version \
 # dev bundle refreshes staging only
 apply_channel VERSION_STAGING munni-deploy-staging.tgz .applied_version_staging \
   docker-compose.staging.yml || rc=1
+# iac twins: each in its own directory, deployed only when their bundles
+# appear (deploy-nas.yml channel=iac-*) — absent stamps skip in µs
+apply_channel_dir VERSION_IAC_PROD munni-deploy-iac-prod.tgz .applied_version_iac_prod \
+  munni-iac-prod docker-compose.munni-iac-prod.yml || rc=1
+apply_channel_dir VERSION_IAC_STAGING munni-deploy-iac-staging.tgz .applied_version_iac_staging \
+  munni-iac-staging docker-compose.munni-iac-staging.yml || rc=1
 # one status line to stdout: the DSM Run Result then always tells what
 # state the cycle LEFT things in, even when nothing changed
-echo "cycle done rc=$rc prod=$(cat "$LIVE/.applied_version" 2>/dev/null || echo none) staging=$(cat "$LIVE/.applied_version_staging" 2>/dev/null || echo none)"
+echo "cycle done rc=$rc prod=$(cat "$LIVE/.applied_version" 2>/dev/null || echo none) staging=$(cat "$LIVE/.applied_version_staging" 2>/dev/null || echo none) iac-prod=$(cat "$LIVE/.applied_version_iac_prod" 2>/dev/null || echo none) iac-staging=$(cat "$LIVE/.applied_version_iac_staging" 2>/dev/null || echo none)"
 exit $rc
