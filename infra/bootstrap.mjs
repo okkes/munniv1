@@ -58,6 +58,16 @@ function envSecret(env, name) {
   }
 }
 
+// a certificate that does not COVER the host is the classic NAS miss:
+// DSM's DDNS default is a single-name certificate (okkes.synology.me,
+// found live 2026-09-10) while every reverse-proxy host is a subdomain —
+// say so instead of printing a bare error code
+const TLS_HINTS = {
+  ERR_TLS_CERT_ALTNAME_INVALID: (host) => `the certificate DSM serves does not cover ${host} — DSM → Control Panel → Security → Certificate → Add → Get a certificate from Let's Encrypt → your DDNS domain WITH the wildcard (*.<domain>) → set as default (own domain: acme.sh with the synology_dsm hook, docs/iac-plan.md §4)`,
+  UNABLE_TO_VERIFY_LEAF_SIGNATURE: (host) => `the certificate chain of ${host} is not trusted — a self-signed or incomplete certificate on the NAS; issue a Let's Encrypt one in DSM`,
+  DEPTH_ZERO_SELF_SIGNED_CERT: (host) => `${host} serves a self-signed certificate — issue a Let's Encrypt one in DSM (Control Panel → Security → Certificate)`,
+  CERT_HAS_EXPIRED: (host) => `the certificate of ${host} has expired — renew it in DSM (Control Panel → Security → Certificate)`,
+};
 async function probe(label, url, ok = (r) => r.ok) {
   // manual controller + unref'd timer: AbortSignal.timeout keeps a live
   // handle armed for its full window, which delays (and on Windows can
@@ -74,7 +84,9 @@ async function probe(label, url, ok = (r) => r.ok) {
     console.log(`${good ? '  ✓' : '  ✗'} ${label}: ${url} (${res.status})`);
     return good;
   } catch (e) {
-    console.log(`  ✗ ${label}: ${url} (${e.cause?.code ?? e.name})`);
+    const code = e.cause?.code ?? e.name;
+    console.log(`  ✗ ${label}: ${url} (${code})`);
+    if (TLS_HINTS[code]) console.log(`    ${TLS_HINTS[code](new URL(url).hostname)}`);
     return false;
   } finally {
     clearTimeout(timer);
