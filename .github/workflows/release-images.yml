@@ -21,6 +21,9 @@ permissions:
 
 jobs:
   api-tests:
+    # first-boot latch: fresh repo copies skip every run until the
+    # wizard marks the repo initialized (variable MUNNI_INITIALIZED)
+    if: ${{ vars.MUNNI_INITIALIZED == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -41,6 +44,9 @@ jobs:
   # job below. The NAS (amd64) and a Raspberry Pi (arm64) pull the
   # same :dev/:latest tag and get their own layers.
   images:
+    # first-boot latch: fresh repo copies skip every run until the
+    # wizard marks the repo initialized (variable MUNNI_INITIALIZED)
+    if: ${{ vars.MUNNI_INITIALIZED == 'true' }}
     needs: api-tests
     strategy:
       matrix:
@@ -154,8 +160,24 @@ jobs:
           cache-from: type=gha,scope=admin-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=admin-${{ matrix.arch }}
 
+      # the shared-services cockpit — a separate app from the env admin
+      # dashboard. Nothing is baked: every stack that runs it configures
+      # it through the runtime overlay (MUNNI_* env at container start).
+      - name: Build & push control
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/control/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/munni-control:${{ steps.meta.outputs.channel }}-${{ steps.meta.outputs.build }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=control-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=control-${{ matrix.arch }}
+
   # merge the per-arch pushes into the channel tags the hosts pull
   manifest:
+    # first-boot latch: fresh repo copies skip every run until the
+    # wizard marks the repo initialized (variable MUNNI_INITIALIZED)
+    if: ${{ vars.MUNNI_INITIALIZED == 'true' }}
     needs: images
     runs-on: ubuntu-latest
     steps:
@@ -169,7 +191,7 @@ jobs:
         run: |
           CHANNEL='${{ needs.images.outputs.channel }}'
           BUILD='${{ needs.images.outputs.build }}'
-          for image in munni-api munni-web munni-admin; do
+          for image in munni-api munni-web munni-admin munni-control; do
             docker buildx imagetools create \
               -t "$REGISTRY/$image:$CHANNEL" \
               -t "$REGISTRY/$image:$CHANNEL-$BUILD" \
