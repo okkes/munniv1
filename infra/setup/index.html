@@ -340,7 +340,7 @@ html{scrollbar-gutter:stable} /* the scroll lock must not reflow the page (the g
   <div class="msg" id="msg-nas"></div>
   <div class="card">
     <h3>Still manual on the NAS (once) — three DSM screens</h3>
-    <p class="why">What the two workflows do: <b>Bootstrap</b> (the step above) mints the environments AND writes every reverse-proxy rule through the DSM API — its output line <code>dsm: reverse-proxy apply failed</code> means the deploy account may not use DSM (code 402/119): Control Panel → User &amp; Group → the deploy user → Applications → allow DSM + File Station, administrators group, then run Bootstrap again. <b>Deploy</b> only uploads the bundle; the poller below applies it within five minutes. The certificate needs nothing: DSM’s own wildcard from DDNS (<code class="dom">*.&lt;domain&gt;</code>) covers every host — for an own domain see docs/iac-plan.md §4 (acme.sh). The DSM firewall API is too fragile to automate safely, so bootstrap only PROBES the firewall.</p>
+    <p class="why">What the two workflows do: <b>Bootstrap</b> (the step above) mints the environments AND writes every reverse-proxy rule through the DSM API — its output line <code>dsm: reverse-proxy apply failed</code> means the deploy account may not use DSM (code 402/119): Control Panel → User &amp; Group → the deploy user → Applications → allow DSM + File Station, administrators group, then run Bootstrap again. <b>Deploy</b> only uploads the bundle; the poller below applies it within five minutes. <b>Certificate</b>: every reverse-proxy host is https, so DSM needs a certificate that covers <code class="dom">*.&lt;domain&gt;</code> — the DDNS default covers only <code class="dom">&lt;domain&gt;</code> itself (found live: a browser then refuses <code class="dom">munni-iac.&lt;domain&gt;</code>). Once: Control Panel → Security → Certificate → Add → Get a certificate from Let’s Encrypt → your DDNS domain WITH the wildcard option → set as default (the rules use the default). Own domain: acme.sh with the synology_dsm hook (docs/iac-plan.md §4). Bootstrap’s Verify names every host the certificate misses. The DSM firewall API is too fragile to automate safely, so bootstrap only PROBES the firewall.</p>
     <ol class="steps">
       <li><b>The poller</b> (once per NAS): Control Panel → Task Scheduler → Create → Scheduled Task → User-defined script · user <code>root</code> · daily, repeat every 5 minutes · run: <code>cd /volume1/docker/munni &amp;&amp; cp apply.sh .apply.run &amp;&amp; sh .apply.run</code> (adjust the share; deploy/nas/README.md). Until it exists, uploaded bundles just sit in the published folder.</li>
       <li>Control Panel → Security → Firewall: <b>allow 172.16.0.0/12</b> (the docker bridge — Logto self-fetches through the host gateway).</li>
@@ -1611,13 +1611,16 @@ async function selectRecommended() {
    FORK merges upstream through GitHub instead). App code stays the copy's
    own — it is the pipeline that must not rot. ── */
 const PIPELINE_PATHS = ['.github/', 'deploy/', 'infra/'];
-const pipelineSkip = (p) => p.startsWith('infra/rendered/') || p.startsWith('infra/setup/') || p.startsWith('infra/tests/') || p.endsWith('.md');
-async function pipelineDrift() {
+// the WHOLE infra tree: the bootstrap workflow runs infra/tests on the
+// copy, and those test the helper (infra/setup) against the manifest —
+// a half-synced tree fails its own tests (munniv2, 2026-09-10)
+const pipelineSkip = (p) => p.startsWith('infra/rendered/') || p.endsWith('.md');
+async function pipelineDrift(ref = S.ref) {
   // GitHub serves trees and contents from a cache that lags a fresh
   // commit by seconds — a throwaway query param sidesteps it
   const [up, mine] = await Promise.all([
     gh(`/repos/${UPSTREAM}/git/trees/dev?recursive=1&nocache=${Date.now()}`),
-    gh(`/repos/${S.slug}/git/trees/${encodeURIComponent(S.ref)}?recursive=1&nocache=${Date.now()}`),
+    gh(`/repos/${S.slug}/git/trees/${encodeURIComponent(ref)}?recursive=1&nocache=${Date.now()}`),
   ]);
   const pick = (t) => new Map((t?.tree ?? []).filter((e) => e.type === 'blob' && PIPELINE_PATHS.some((p) => e.path.startsWith(p)) && !pipelineSkip(e.path)).map((e) => [e.path, e.sha]));
   const a = pick(up);
@@ -1636,15 +1639,17 @@ async function syncPipeline({ repo = null } = {}) {
     return;
   }
   msg('msg-connect', `comparing the pipeline files with ${UPSTREAM}…`, true);
-  const drift = await pipelineDrift();
-  if (!drift.length) { msg('msg-connect', `Pipeline files match ${UPSTREAM} ✓ (workflows, deploy scripts, infra).`, true); return; }
   const current = (path, branch) => gh(`/repos/${S.slug}/contents/${path}?ref=${encodeURIComponent(branch)}&nocache=${Date.now()}`, { allow404: true });
+  const blobs = new Map();
   let written = 0;
   const names = [];
-  for (const f of drift) {
-    const blob = await gh(`/repos/${UPSTREAM}/git/blobs/${f.sha}`);
-    const content = String(blob.content ?? '').replace(/\n/g, '');
-    for (const branch of branches) {
+  for (const branch of branches) {
+    // each branch has its OWN drift — a copy's default branch lags the
+    // connected one (and workflows register from the default branch)
+    const drift = await pipelineDrift(branch);
+    for (const f of drift) {
+      if (!blobs.has(f.sha)) blobs.set(f.sha, String((await gh(`/repos/${UPSTREAM}/git/blobs/${f.sha}`)).content ?? '').replace(/\n/g, ''));
+      const content = blobs.get(f.sha);
       let cur = await current(f.path, branch);
       if (cur?.sha === f.sha) continue;
       // one retry: a 409 means the file moved under us (a sync seconds
