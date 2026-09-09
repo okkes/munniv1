@@ -51,7 +51,7 @@ const app = createApp({
   token: 'tok',
   probeImpl: async () => false,
   runImpl: (res, cmd, args, opts) => { runs.push({ cmd, args, opts }); res.writeHead(200, {}); res.end('[exit 0]\n'); },
-  validateImpl: async (provider, values) => { validations.push({ provider, values }); return { ok: true, detail: 'fake' }; },
+  validateImpl: async (provider, values, opts) => { validations.push({ provider, values, opts }); return { ok: true, detail: 'fake' }; },
 });
 
 /** fake child-process factory for the multi-step endpoints */
@@ -150,11 +150,15 @@ test('validate passes only manifest operator names through, merged over the stor
   const res = fakeRes();
   await app(fakeReq({
     method: 'POST', url: '/api/validate', token: 'tok',
-    body: { provider: 'gocardless', values: { NAS_GOCARDLESS_SECRET_ID: 'id1', PATH: 'evil', RANDOM: 'x', SYNOLOGY_URL: 'https://nas:5001' } },
+    body: { provider: 'gocardless', values: { NAS_GOCARDLESS_SECRET_ID: 'id1', PATH: 'evil', RANDOM: 'x', SYNOLOGY_URL: 'https://nas:5001' }, redirectUris: ['https://munni-prod-logto.192-168-2-2.sslip.io/callback/google-universal', 'javascript:alert(1)', 'ftp://x/y', 42, 'http://localhost:3201/callback/google-universal'] },
   }), res);
   assert.equal(res.statusCode, 200);
   assert.equal(validations.length, 1);
   assert.equal(validations[0].provider, 'gocardless');
+  // only http(s) callbacks reach the validator's redirect probes
+  assert.deepEqual(validations[0].opts.redirectUris, ['https://munni-prod-logto.192-168-2-2.sslip.io/callback/google-universal', 'http://localhost:3201/callback/google-universal']);
+  // …and the family's app bundle ids ride along (an App ID pasted as Apple client id is named)
+  assert.deepEqual(validations[0].opts.iosAppIds, ['app.munni', 'app.munni.dev', 'app.munni.local.prod', 'app.munni.local.dev']);
   assert.equal(validations[0].values.NAS_GOCARDLESS_SECRET_ID, 'id1');
   // SYNOLOGY_* are operator names (NAS platform) — allowed for validation
   assert.equal(validations[0].values.SYNOLOGY_URL, 'https://nas:5001');
@@ -276,7 +280,8 @@ test('status reports per-stack store NAMES, requirements and probes — never va
   assert.equal(body.stacks['munni-local-prod'].channel, 'dev');
   const shared = body.stacks['munni-local-shared'];
   assert.deepEqual(shared.services, { glitchtip: false, vault: false, control: false, pgadmin: false });
-  assert.ok(shared.required.includes('NAS_GHCR_PAT'), 'family roots are the shared stack\'s asks');
+  assert.ok(Array.isArray(shared.required), 'family roots are the shared stack\'s asks');
+  assert.ok(!shared.required.includes('NAS_GHCR_PAT'), 'the registry token is optional (the munni images are public) — never a family ask (2026-09-10)');
   const prod = body.stacks['munni-local-prod'];
   assert.deepEqual(prod.services, { web: false, api: false, logto: false });
   assert.ok(!prod.required.includes('NAS_GHCR_PAT'), 'env stacks must not re-ask for shared names');
@@ -734,16 +739,28 @@ test('ios-appid: registers the bundle id and its long-run capabilities via the A
   const prev = loadLocalValues(shared);
   saveLocalValues(shared, { ...prev, ASC_KEY_ID: 'K1', ASC_ISSUER_ID: 'ISS1', ASC_KEY_P8: Buffer.from(ecPem2).toString('base64') });
   try {
+    // App Store Connect in a box: the capability LIST is the truth —
+    // ASSOCIATED_DOMAINS pre-exists, APPLE_ID_AUTH exists WITHOUT its
+    // primary setting (the live 2026-09-09 state: keys found no App ID)
     const calls = [];
+    const caps = [
+      { id: 'BID1_ASSOCIATED_DOMAINS', attributes: { capabilityType: 'ASSOCIATED_DOMAINS', settings: null } },
+      { id: 'BID1_APPLE_ID_AUTH', attributes: { capabilityType: 'APPLE_ID_AUTH', settings: null } },
+    ];
     const netFetchImpl = async (url, init = {}) => {
       calls.push({ url, init });
       if (url.includes('/bundleIds?')) return { ok: true, status: 200, json: async () => ({ data: [] }) };
       if (url.endsWith('/bundleIds')) return { ok: true, status: 201, json: async () => ({ data: { type: 'bundleIds', id: 'BID1' } }) };
-      if (url.endsWith('/bundleIdCapabilities')) {
-        const cap = JSON.parse(init.body).data.attributes.capabilityType;
-        return cap === 'ASSOCIATED_DOMAINS'
-          ? { ok: false, status: 409, json: async () => ({}), text: async () => 'exists' }
-          : { ok: true, status: 201, json: async () => ({}), text: async () => '' };
+      if (url.endsWith('/bundleIds/BID1/bundleIdCapabilities')) return { ok: true, status: 200, json: async () => ({ data: caps }) };
+      if (url.endsWith('/bundleIdCapabilities') && init.method === 'POST') {
+        const { capabilityType, settings } = JSON.parse(init.body).data.attributes;
+        caps.push({ id: `BID1_${capabilityType}`, attributes: { capabilityType, settings: settings ?? null } });
+        return { ok: true, status: 201, json: async () => ({}), text: async () => '' };
+      }
+      if (url.includes('/bundleIdCapabilities/') && init.method === 'PATCH') {
+        const { settings } = JSON.parse(init.body).data.attributes;
+        caps.find((c) => url.endsWith(c.id)).attributes.settings = settings;
+        return { ok: true, status: 200, json: async () => ({}), text: async () => '' };
       }
       return { ok: false, status: 500, json: async () => ({}), text: async () => '' };
     };
@@ -753,14 +770,42 @@ test('ios-appid: registers the bundle id and its long-run capabilities via the A
     await settle(res);
     const stream = res.chunks.join('');
     assert.match(stream, /App ID app\.munni\.local\.prod registered ✓/);
-    assert.match(stream, /PUSH_NOTIFICATIONS ✓/);
-    assert.match(stream, /APPLE_ID_AUTH ✓/);
-    assert.match(stream, /ASSOCIATED_DOMAINS ✓/, 'a 409 (already enabled) counts as done');
+    assert.match(stream, /PUSH_NOTIFICATIONS enabled ✓/);
+    assert.match(stream, /APPLE_ID_AUTH completed ✓ — Sign in with Apple as the PRIMARY App ID/);
+    assert.match(stream, /ASSOCIATED_DOMAINS ✓/, 'listed = done, no request needed');
     assert.match(stream, /New App/);
     assert.match(stream, /\[exit 0\]/);
     const create = calls.find((c) => c.url.endsWith('/bundleIds') && c.init.method === 'POST');
     assert.equal(JSON.parse(create.init.body).data.attributes.identifier, 'app.munni.local.prod');
-    assert.equal(calls.filter((c) => c.url.endsWith('/bundleIdCapabilities')).length, 3);
+    const posts = calls.filter((c) => c.url.endsWith('/bundleIdCapabilities') && c.init.method === 'POST');
+    assert.deepEqual(posts.map((c) => JSON.parse(c.init.body).data.attributes.capabilityType), ['PUSH_NOTIFICATIONS'], 'only the missing one is created');
+    const patch = calls.find((c) => c.url.endsWith('/bundleIdCapabilities/BID1_APPLE_ID_AUTH') && c.init.method === 'PATCH');
+    assert.deepEqual(JSON.parse(patch.init.body).data.attributes.settings, [{ key: 'APPLE_ID_AUTH_APP_CONSENT', options: [{ key: 'PRIMARY_APP_CONSENT' }] }], 'the primary-app consent rides the update');
+
+    // a second run finds everything complete: no mutation at all
+    const again = fakeRes();
+    const before = calls.length;
+    await app2(fakeReq({ method: 'POST', url: '/api/local/ios-appid', token: 'tok', body: { stack: 'munni-local-prod' } }), again);
+    await settle(again);
+    assert.ok(!calls.slice(before).some((c) => c.init.method === 'POST' && c.url.includes('bundleIdCapabilities')));
+    assert.ok(!calls.slice(before).some((c) => c.init.method === 'PATCH'));
+    assert.match(again.chunks.join(''), /APPLE_ID_AUTH ✓/);
+
+    // Apple refusing an entity (409 with nothing recorded) is NOT "already enabled"
+    const refusing = async (url, init = {}) => {
+      if (url.includes('/bundleIds?')) return { ok: true, status: 200, json: async () => ({ data: [{ id: 'BID2', attributes: { identifier: 'app.munni.local.prod' } }] }) };
+      if (url.endsWith('/bundleIds/BID2/bundleIdCapabilities')) return { ok: true, status: 200, json: async () => ({ data: [] }) };
+      if (init.method === 'POST') return { ok: false, status: 409, json: async () => ({}), text: async () => 'ENTITY_ERROR' };
+      return { ok: false, status: 500, json: async () => ({}), text: async () => '' };
+    };
+    const refused = fakeRes();
+    await createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl: refusing })(
+      fakeReq({ method: 'POST', url: '/api/local/ios-appid', token: 'tok', body: { stack: 'munni-local-prod' } }), refused);
+    await settle(refused);
+    const rs = refused.chunks.join('');
+    assert.match(rs, /APPLE_ID_AUTH NOT enabled \(Apple answered 409: ENTITY_ERROR\)/);
+    assert.match(rs, /Enable as a primary App ID/);
+    assert.match(rs, /\[exit 1\]/);
   } finally {
     saveLocalValues(shared, prev);
   }
@@ -769,7 +814,7 @@ test('ios-appid: registers the bundle id and its long-run capabilities via the A
   const bare = fakeRes();
   await app(fakeReq({ method: 'POST', url: '/api/local/ios-appid', token: 'tok', body: { stack: 'munni-local-prod' } }), bare);
   await settle(bare);
-  assert.match(bare.chunks.join(''), /not stored yet \(step 3\)/);
+  assert.match(bare.chunks.join(''), /not stored yet \(Features & accounts\)/);
 });
 
 test('new-store-package: the operator names the suffix, re-render follows, consumers see it', async () => {
@@ -941,7 +986,7 @@ test('store-retire: withdraws Play internal testing and expires TestFlight build
   }
 });
 
-test('firebase as code: setup enables the project, registers both apps, copies the sender credential; refusals name the role', async () => {
+test('firebase as code: setup finds the project, registers both apps, copies the sender credential', async () => {
   const { generateKeyPairSync } = await import('node:crypto');
   const rsaPem = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' });
   const shared = loadStack('munni-local-shared');
@@ -964,11 +1009,17 @@ test('firebase as code: setup enables the project, registers both apps, copies t
       }
       if (url.endsWith('/androidApps') && init.method === 'POST') return { ok: true, status: 200, json: async () => ({ name: 'operations/o2', done: true }) };
       if (url.includes('/androidApps/A1/config')) return { ok: true, status: 200, json: async () => ({ configFileContents: 'R1M=' }) };
-      if (url.includes('/iosApps?')) return { ok: true, status: 200, json: async () => ({ apps: [{ appId: 'I1', bundleId: 'app.munni.local.prod' }] }) };
+      // a stale display name from before the track rode in the label
+      if (url.includes('/iosApps?')) return { ok: true, status: 200, json: async () => ({ apps: [{ appId: 'I1', bundleId: 'app.munni.local.prod', displayName: 'munni prod ios' }] }) };
+      if (url.includes('/iosApps/I1?updateMask=displayName') && init.method === 'PATCH') return { ok: true, status: 200, json: async () => ({}) };
       if (url.includes('/iosApps/I1/config')) return { ok: true, status: 200, json: async () => ({ configFileContents: 'UEw=' }) };
+      if (url.endsWith('/health')) return { ok: true, status: 200, json: async () => ({ capabilities: { fcm: true } }) };
       return { ok: false, status: 500, json: async () => ({}), text: async () => '' };
     };
-    const app2 = createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl });
+    const spawned = [];
+    const app2 = createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl, spawnImpl: scriptedSpawn(spawned, () => 'ok\n') });
+    const envFile = join(SCRATCH, 'munni-local-prod', '.env.munni-local-prod');
+    rmSync(envFile, { force: true });
     const res = fakeRes();
     await app2(fakeReq({ method: 'POST', url: '/api/local/firebase-setup', token: 'tok', body: { stack: 'munni-local-prod' } }), res);
     await settle(res);
@@ -976,10 +1027,30 @@ test('firebase as code: setup enables the project, registers both apps, copies t
     assert.match(out, /Firebase project p ✓/);
     assert.match(out, /registered as a Firebase android app ✓/);
     assert.match(out, /app\.munni\.local\.prod already registered ✓/, 'the iOS app was already there');
+    assert.match(out, /renamed to "munni local prod ios" ✓/, 'the track rides into the console chip name');
+    const created = calls.find((c) => c.url.endsWith('/androidApps') && c.init.method === 'POST');
+    assert.equal(JSON.parse(created.init.body).displayName, 'munni local prod android');
     assert.match(out, /sender credential: the api sends push with the SAME service account — stored ✓/);
+    // …and the api actually CARRIES it: re-render + up, then /health says fcm
+    assert.match(out, /re-render prod with the sender credential/);
+    assert.match(out, /restart prod so the api picks the sender up/);
+    assert.match(out, /the api reports native push \(fcm\) ✓/);
     assert.match(out, /APNs key/);
     assert.match(out, /\[exit 0\]/);
+    assert.ok(spawned.some((s) => s.args.includes('--stack') && s.args.includes('munni-local-prod')), 'bootstrap re-rendered the env');
+    assert.ok(spawned.some((s) => s.cmd === 'docker' && s.args.includes('up') && s.args.includes('docker-compose.munni-local-prod.yml')), 'the env stack came up again');
     assert.equal(loadLocalValues(shared).NAS_FCM_SERVICE_ACCOUNT_JSON, loadLocalValues(shared).PLAY_SERVICE_ACCOUNT_JSON);
+
+    // an env already carrying the credential is left alone (no restart on every Build)
+    (await import('node:fs')).mkdirSync(join(SCRATCH, 'munni-local-prod'), { recursive: true });
+    (await import('node:fs')).writeFileSync(envFile, "FCM_SERVICE_ACCOUNT_JSON='{\"client_email\":\"ci@sa.test\"}'\n");
+    const before = spawned.length;
+    const again = fakeRes();
+    await app2(fakeReq({ method: 'POST', url: '/api/local/firebase-setup', token: 'tok', body: { stack: 'munni-local-prod' } }), again);
+    await settle(again);
+    assert.match(again.chunks.join(''), /sender: the prod api environment already carries it ✓/);
+    assert.equal(spawned.length, before, 'nothing spawned when the env already carries the sender');
+    rmSync(envFile, { force: true });
 
     // …and native-config now carries both configs for CI to bake
     const nc = fakeRes();
@@ -987,21 +1058,317 @@ test('firebase as code: setup enables the project, registers both apps, copies t
     const body = JSON.parse(nc.chunks.join(''));
     assert.equal(body.variables.NATIVE_GOOGLE_SERVICES_B64, 'R1M=');
     assert.equal(body.variables.NATIVE_IOS_FIREBASE_PLIST_B64, 'UEw=');
-
-    // the classic refusal: no Firebase Admin role → the fix is NAMED
-    const denyFetch = async (url) => {
-      if (url.includes('oauth2.googleapis.com')) return { ok: true, status: 200, json: async () => ({ access_token: 'gtok' }) };
-      return { ok: false, status: 403, json: async () => ({ error: { message: 'The caller does not have permission' } }), text: async () => '' };
-    };
-    const deny = fakeRes();
-    await createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl: denyFetch })(
-      fakeReq({ method: 'POST', url: '/api/local/firebase-setup', token: 'tok', body: { stack: 'munni-local-prod' } }), deny);
-    await settle(deny);
-    const denyOut = deny.chunks.join('');
-    assert.match(denyOut, /Firebase Admin role/);
-    assert.match(denyOut, /\[exit 1\]/);
+    // refusals: see the bare-Cloud-project test below
   } finally {
     saveLocalValues(shared, prev);
+  }
+});
+
+test('firebase as code: a bare Cloud project gets Firebase added; the enable right is probed FIRST and its gap names the Service Usage Admin role', async () => {
+  const { generateKeyPairSync } = await import('node:crypto');
+  const rsaPem = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' });
+  const shared = loadStack('munni-local-shared');
+  const prev = loadLocalValues(shared);
+  saveLocalValues(shared, {
+    ...prev,
+    PLAY_SERVICE_ACCOUNT_JSON: JSON.stringify({ client_email: 'ci@sa.test', token_uri: 'https://oauth2.googleapis.com/token', private_key: rsaPem, project_id: 'p' }),
+  });
+  const ok = (body) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) });
+  const fail = (status, error) => ({ ok: false, status, json: async () => ({ error }), text: async () => JSON.stringify({ error }) });
+  const ENABLE = '/projects/p/services/firebase.googleapis.com:enable';
+  const bare = fail(404, { code: 404, message: 'Requested entity was not found.' });
+  // Google's real answer (captured live 2026-09-08) with Firebase Admin granted
+  const denied = fail(403, {
+    message: 'Permission denied to enable service [firebase.googleapis.com]',
+    status: 'PERMISSION_DENIED',
+    details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'AUTH_PERMISSION_DENIED', domain: 'serviceusage.googleapis.com', metadata: { service: 'serviceusage.googleapis.com', permission: 'serviceusage.services.enable' } }],
+  });
+  const apps = (url) => {
+    if (url.includes('/androidApps?')) return ok({ apps: [{ appId: 'A1', packageName: 'app.munni.local.prod', displayName: 'munni local prod android' }] });
+    if (url.includes('/androidApps/A1/config')) return ok({ configFileContents: 'R1M=' });
+    if (url.includes('/iosApps?')) return ok({ apps: [{ appId: 'I1', bundleId: 'app.munni.local.prod', displayName: 'munni local prod ios' }] });
+    if (url.includes('/iosApps/I1/config')) return ok({ configFileContents: 'UEw=' });
+    if (url.endsWith('/health')) return ok({ capabilities: { fcm: true } });
+    return null;
+  };
+  const setup = async (fetchImpl) => {
+    const res = fakeRes();
+    await createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl: fetchImpl, spawnImpl: scriptedSpawn([], () => 'ok\n') })(
+      fakeReq({ method: 'POST', url: '/api/local/firebase-setup', token: 'tok', body: { stack: 'munni-local-prod' } }), res);
+    await settle(res);
+    return res.chunks.join('');
+  };
+  try {
+    // (1) bare project, the account may switch services on → no-op enable, addFirebase, apps
+    const calls = [];
+    const out1 = await setup(async (url) => {
+      calls.push(url);
+      if (url.includes('oauth2.googleapis.com')) return ok({ access_token: 'gtok' });
+      if (url.endsWith('/projects/p')) return bare;
+      if (url.endsWith(ENABLE)) return ok({ name: 'operations/su1', done: true });
+      if (url.includes('/projects/p:addFirebase')) return ok({ name: 'operations/o1', done: true });
+      return apps(url) ?? fail(500, {});
+    });
+    assert.match(out1, /p is not a Firebase project yet — adding Firebase to it/);
+    assert.match(out1, /Firebase enabled on p ✓/);
+    assert.match(out1, /\[exit 0\]/);
+    assert.ok(calls.findIndex((u) => u.endsWith(ENABLE)) < calls.findIndex((u) => u.includes(':addFirebase')), 'the enable probe runs BEFORE addFirebase');
+
+    // (2) the Management API is off and the account may switch it on → done in-line, no manual click
+    const out2 = await setup(async (url) => {
+      if (url.includes('oauth2.googleapis.com')) return ok({ access_token: 'gtok' });
+      if (url.endsWith('/projects/p')) return fail(403, { message: 'Firebase Management API has not been used in project 1 before or it is disabled.', details: [{ reason: 'SERVICE_DISABLED', metadata: { activationUrl: 'https://console.developers.google.com/apis/api/firebase.googleapis.com/overview?project=1' } }] });
+      if (url.endsWith(ENABLE)) return ok({ name: 'operations/su2', done: true });
+      if (url.includes('/projects/p:addFirebase')) return ok({ name: 'operations/o2', done: true });
+      return apps(url) ?? fail(500, {});
+    });
+    assert.match(out2, /the Firebase Management API is off in p — switching it on/);
+    assert.match(out2, /Firebase Management API enabled ✓/);
+    assert.match(out2, /Firebase enabled on p ✓/);
+    assert.match(out2, /\[exit 0\]/);
+
+    // (3) THE live refusal (2026-09-08): Firebase Admin granted, Google still says
+    // no — the enable right is the gap; the text names it and both ways out
+    const calls3 = [];
+    const out3 = await setup(async (url) => {
+      calls3.push(url);
+      if (url.includes('oauth2.googleapis.com')) return ok({ access_token: 'gtok' });
+      if (url.endsWith('/projects/p')) return bare;
+      if (url.endsWith(ENABLE)) return denied;
+      return fail(500, {});
+    });
+    assert.match(out3, /serviceusage\.services\.enable — the Firebase Admin role does NOT carry it/);
+    assert.match(out3, /Service Usage Admin role beside Firebase Admin/);
+    assert.match(out3, /iam-admin\/iam\?project=p/);
+    assert.match(out3, /add Firebase to p by hand once/);
+    assert.match(out3, /\[exit 1\]/);
+    assert.ok(!calls3.some((u) => u.includes(':addFirebase')), 'no addFirebase attempt behind a known gap');
+    assert.doesNotMatch(out3, /lacks Firebase rights/, 'the old wrong-role diagnosis is gone');
+
+    // (4) no Firebase rights at all: the probe passes, addFirebase itself
+    // refuses → Firebase Admin IS the fix, and Google's own words show
+    const out4 = await setup(async (url) => {
+      if (url.includes('oauth2.googleapis.com')) return ok({ access_token: 'gtok' });
+      if (url.endsWith(ENABLE)) return ok({ name: 'operations/su4', done: true });
+      return fail(403, { message: 'The caller does not have permission' });
+    });
+    assert.match(out4, /grant it the Firebase Admin role once/);
+    assert.match(out4, /Google: The caller does not have permission/);
+    assert.match(out4, /\[exit 1\]/);
+
+    // …and the push pill (store-status) tells the same story BEFORE Build is pressed
+    const status = async (fetchImpl) => {
+      const res = fakeRes();
+      await createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl: fetchImpl })(
+        fakeReq({ url: '/api/local/store-status?stack=munni-local-prod', token: 'tok' }), res);
+      return JSON.parse(res.chunks.join('')).firebase;
+    };
+    const bareStatus = (enable) => async (url) => {
+      if (url.includes('oauth2.googleapis.com')) return ok({ access_token: 'gtok' });
+      if (url.endsWith('/projects/p')) return bare;
+      if (url.endsWith(ENABLE)) return enable;
+      if (url.includes('appstoreconnect')) return ok({ data: [] });
+      return fail(404, {});
+    };
+    const willAdd = await status(bareStatus(ok({ name: 'operations/su5', done: true })));
+    assert.equal(willAdd.state, 'missing-app');
+    assert.match(willAdd.detail, /p is not a Firebase project yet; Build adds Firebase to it/);
+    const blocked = await status(bareStatus(denied));
+    assert.equal(blocked.state, 'error');
+    assert.match(blocked.detail, /Service Usage Admin role/);
+    assert.doesNotMatch(blocked.detail, /Requested entity was not found/, 'the raw 404 text never reaches the pill');
+  } finally {
+    saveLocalValues(shared, prev);
+  }
+});
+
+test('apple cert: the machine mints the p12 password, pulls the minted certificate out of the run artifact, refuses without a token', async () => {
+  const { zipBuild } = await import('../modules/zip.mjs');
+  const shared = loadStack('munni-local-shared');
+  const prev = loadLocalValues(shared);
+  const { APPLE_DEV_CERT_P12: _p12, APPLE_DEV_CERT_PASSWORD: _pw, APPLE_DEV_CERT_SERIAL: _sn, IAC_GH_PAT: _pat, ...bare } = prev;
+  // fake App Store Connect credentials: the status endpoint asks Apple
+  // (mocked below) whether the stored certificate is still listed
+  const { generateKeyPairSync } = await import('node:crypto');
+  const ecPem = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey.export({ type: 'pkcs8', format: 'pem' });
+  saveLocalValues(shared, { ...bare, ASC_KEY_ID: 'K9', ASC_ISSUER_ID: 'ISS9', ASC_KEY_P8: Buffer.from(ecPem).toString('base64') });
+  try {
+    const status = async (app2) => {
+      const res = fakeRes();
+      await app2(fakeReq({ url: '/api/local/apple-cert', token: 'tok' }), res);
+      return JSON.parse(res.chunks.join(''));
+    };
+    assert.deepEqual(await status(app), { present: false, password: false });
+
+    const pw = fakeRes();
+    await app(fakeReq({ method: 'POST', url: '/api/local/apple-cert/password', token: 'tok' }), pw);
+    const minted = loadLocalValues(shared).APPLE_DEV_CERT_PASSWORD;
+    assert.match(minted, /^[0-9a-f]{48}$/, 'a 24-byte hex password lands in the machine store');
+    await app(fakeReq({ method: 'POST', url: '/api/local/apple-cert/password', token: 'tok' }), fakeRes());
+    assert.equal(loadLocalValues(shared).APPLE_DEV_CERT_PASSWORD, minted, 'minting twice keeps the first password');
+    assert.deepEqual(await status(app), { present: false, password: true });
+
+    // no GitHub token in the store → the import names the fix
+    const noPat = fakeRes();
+    await app(fakeReq({ method: 'POST', url: '/api/local/apple-cert/import', token: 'tok', body: { slug: 'me/munni', runId: 42 } }), noPat);
+    await settle(noPat);
+    assert.match(noPat.chunks.join(''), /no GitHub token in the machine store/);
+    assert.match(noPat.chunks.join(''), /\[exit 1\]/);
+
+    saveLocalValues(shared, { ...loadLocalValues(shared), IAC_GH_PAT: 'ghp_test' });
+    const b64 = 'MIIKAQIBAzCCCscGCSqGSIb3DQEHAaCCCrgEggq0'.repeat(4);
+    const calls = [];
+    const netFetchImpl = async (url, init = {}) => {
+      calls.push({ url, init });
+      if (url.endsWith('/actions/runs/42/artifacts')) return { ok: true, status: 200, json: async () => ({ artifacts: [{ id: 7, name: 'apple-dev-cert-p12' }] }) };
+      if (url.endsWith('/actions/artifacts/7/zip')) return { ok: false, status: 302, headers: { get: (k) => (k === 'location' ? 'https://blob.example/7.zip' : null) } };
+      if (url === 'https://blob.example/7.zip') return { ok: true, status: 200, arrayBuffer: async () => zipBuild({ 'APPLE_DEV_CERT_P12.b64': `${b64}\n`, 'APPLE_DEV_CERT_SERIAL.txt': '0abc123\n' }) };
+      if (url.startsWith('https://api.appstoreconnect.apple.com/v1/certificates')) return { ok: true, status: 200, json: async () => ({ data: [{ id: 'CERT1', attributes: { serialNumber: 'ABC123', expirationDate: '2099-01-01T00:00:00.000+00:00' } }] }) };
+      return { ok: false, status: 500, json: async () => ({}) };
+    };
+    const app2 = createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl });
+    const imp = fakeRes();
+    await app2(fakeReq({ method: 'POST', url: '/api/local/apple-cert/import', token: 'tok', body: { slug: 'me/munni', runId: 42 } }), imp);
+    await settle(imp);
+    const out = imp.chunks.join('');
+    assert.match(out, /Apple Development certificate stored in the machine store ✓/);
+    assert.match(out, /\[exit 0\]/);
+    assert.equal(loadLocalValues(shared).APPLE_DEV_CERT_P12, b64, 'the artifact content (trimmed) is the store value');
+    assert.equal(calls[0].init.headers.authorization, 'Bearer ghp_test', 'the machine token lists the artifacts');
+    assert.equal(calls[1].init.redirect, 'manual', 'the blob hop is taken WITHOUT the token');
+    assert.equal(calls[2].init.headers, undefined);
+    assert.equal(loadLocalValues(shared).APPLE_DEV_CERT_SERIAL, 'ABC123', 'the serial file rides along (leading zeros dropped, upper-cased)');
+    assert.deepEqual(await status(app2), { present: true, password: true, serial: 'ABC123', apple: { state: 'valid', expires: '2099-01-01T00:00:00.000+00:00', id: 'CERT1' } });
+
+    // Apple no longer lists the serial (revoked) → the wizard forgets the
+    // certificate and mints again; the password stays
+    const gone = createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: [{ id: 'OTHER', attributes: { serialNumber: 'FFFF', expirationDate: '2099-01-01T00:00:00.000+00:00' } }] }) }) });
+    assert.equal((await status(gone)).apple.state, 'missing');
+    await app(fakeReq({ method: 'POST', url: '/api/local/apple-cert/forget', token: 'tok' }), fakeRes());
+    assert.deepEqual(await status(app), { present: false, password: true }, 'forgetting drops the p12 and its serial, keeps the password');
+
+    // a run without the artifact (mint job failed) → named, exit 1
+    const none = fakeRes();
+    await createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ artifacts: [] }) }) })(
+      fakeReq({ method: 'POST', url: '/api/local/apple-cert/import', token: 'tok', body: { slug: 'me/munni', runId: 43 } }), none);
+    await settle(none);
+    assert.match(none.chunks.join(''), /carries no apple-dev-cert-p12 artifact/);
+    assert.match(none.chunks.join(''), /\[exit 1\]/);
+  } finally {
+    saveLocalValues(shared, prev);
+  }
+});
+
+test('autonomy: settings persist; a check fetches, pulls only on a clean tree, re-renders after a pull, pulls images and brings the family up; the logon task rides schtasks', async () => {
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const { loadAutonomy, saveAutonomy } = await import('../modules/stack.mjs');
+  const envFiles = ['munni-local-shared', 'munni-local-prod'].map((n) => join(SCRATCH, n, `.env.${n}`));
+  for (const f of envFiles) { mkdirSync(join(f, '..'), { recursive: true }); writeFileSync(f, 'X=1\n'); }
+  const prevState = loadAutonomy();
+  try {
+    // off by default; turning it on persists (timers are main's business — none here)
+    const st0 = fakeRes();
+    await app(fakeReq({ url: '/api/local/autonomy', token: 'tok' }), st0);
+    const s0 = JSON.parse(st0.chunks.join(''));
+    assert.equal(s0.enabled, false);
+    assert.equal(s0.intervalMinutes, 10);
+    const on = fakeRes();
+    await app(fakeReq({ method: 'POST', url: '/api/local/autonomy', token: 'tok', body: { enabled: true, intervalMinutes: 1 } }), on);
+    assert.equal(loadAutonomy().enabled, true);
+    assert.equal(loadAutonomy().intervalMinutes, 10, 'below the floor the interval stays');
+    await app(fakeReq({ method: 'POST', url: '/api/local/autonomy', token: 'tok', body: { intervalMinutes: 30 } }), fakeRes());
+    assert.equal(loadAutonomy().intervalMinutes, 30);
+
+    const cycle = async ({ dirty, behind }) => {
+      const spawned = [];
+      let restarted = 0;
+      const outputs = (n, args) => {
+        if (args[0] === 'rev-parse') return 'dev\n';
+        if (args[0] === 'status') return dirty ? ' M apps/web/tests/screenshots/x.png\n' : '';
+        if (args[0] === 'rev-list') return `${behind}\n`;
+        if (args.includes('up')) return ' Container munni-local-prod-api-prod-1  Recreated\n Container munni-local-prod-web-prod-1  Running\n';
+        return '';
+      };
+      const app2 = createApp({ token: 'tok', probeImpl: async () => false, spawnImpl: scriptedSpawn(spawned, outputs), restartImpl: () => { restarted += 1; } });
+      const res = fakeRes();
+      await app2(fakeReq({ method: 'POST', url: '/api/local/autonomy/run', token: 'tok' }), res);
+      await settle(res);
+      return { out: res.chunks.join(''), spawned, restarted: () => restarted };
+    };
+
+    // clean tree, 2 commits behind → pull, re-render both set-up stacks, images, up
+    const a = await cycle({ dirty: false, behind: 2 });
+    const gitArgs = a.spawned.filter((s) => s.cmd === 'git').map((s) => s.args[0]);
+    assert.deepEqual(gitArgs, ['rev-parse', 'status', 'fetch', 'rev-list', 'pull']);
+    assert.ok(a.spawned.some((s) => s.cmd === 'git' && s.args.includes('--ff-only')), 'fast-forward only');
+    const renders = a.spawned.filter((s) => s.args.includes('--stack')).map((s) => s.args.at(-1));
+    assert.deepEqual(renders, ['munni-local-shared', 'munni-local-prod'], 'set-up stacks re-render after a pull; the dev env (never rendered) is skipped');
+    assert.ok(a.spawned.some((s) => s.cmd === 'docker' && s.args.includes('pull') && s.args.includes('docker-compose.munni-local-prod.yml')), 'images pulled');
+    assert.ok(a.spawned.some((s) => s.cmd === 'docker' && s.args.includes('up') && s.args.includes('docker-compose.munni-local-shared.yml')), 'family brought up');
+    assert.match(a.out, /munni-local-dev: not set up yet — skipped/);
+    assert.match(a.out, /code pulled; restarted: munni-local-prod-api-prod-1/);
+    assert.match(a.out, /the helper restarts itself/);
+    assert.match(a.out, /\[exit 0\]/);
+    const saved = loadAutonomy().lastResult;
+    assert.equal(saved.pulled, true);
+    assert.deepEqual(saved.changed, ['munni-local-prod-api-prod-1']);
+
+    // dirty tree, commits waiting → the pull pauses, images still update, no re-render, no restart
+    const b = await cycle({ dirty: true, behind: 3 });
+    assert.ok(!b.spawned.some((s) => s.cmd === 'git' && s.args[0] === 'pull'), 'no pull on a dirty tree');
+    assert.ok(!b.spawned.some((s) => s.args.includes('--stack')), 'no re-render without new code');
+    assert.ok(b.spawned.some((s) => s.cmd === 'docker' && s.args.includes('pull')), 'images still pulled');
+    assert.match(b.out, /paused: 3 new commit\(s\) on origin\/dev, but this checkout has uncommitted changes \(1 file\(s\)\)/);
+    assert.doesNotMatch(b.out, /restarts itself/);
+    assert.equal(loadAutonomy().lastResult.paused.startsWith('3 new commit'), true);
+
+    // up to date → nothing pulled, nothing re-rendered
+    const c = await cycle({ dirty: false, behind: 0 });
+    assert.match(c.out, /up to date with origin\/dev/);
+    assert.match(c.out, /code unchanged/);
+
+    // status carries the checkout facts the card shows
+    const st = fakeRes();
+    await createApp({ token: 'tok', probeImpl: async () => false, spawnImpl: scriptedSpawn([], (n, args) => (args[0] === 'rev-parse' ? 'dev\n' : '')) })(
+      fakeReq({ url: '/api/local/autonomy', token: 'tok' }), st);
+    const s1 = JSON.parse(st.chunks.join(''));
+    assert.equal(s1.branch, 'dev');
+    assert.equal(s1.enabled, true);
+    assert.equal(s1.running, false);
+    assert.equal(s1.armed, false, 'tests never arm the timer');
+    assert.equal(s1.logonTask, process.platform === 'win32' ? true : null);
+
+    // the logon task: Task Scheduler on Windows, a clear no on other platforms
+    const spawned = [];
+    const logon = fakeRes();
+    await createApp({ token: 'tok', probeImpl: async () => false, spawnImpl: scriptedSpawn(spawned, () => 'SUCCESS\n') })(
+      fakeReq({ method: 'POST', url: '/api/local/autonomy/logon', token: 'tok', body: { install: true } }), logon);
+    await settle(logon);
+    const lo = logon.chunks.join('');
+    if (process.platform === 'win32') {
+      // the ScheduledTasks module, not schtasks.exe: an ONLOGON trigger
+      // through schtasks needs elevation (Access is denied, live 2026-09-08)
+      const create = spawned.find((s) => s.cmd === 'powershell.exe');
+      const script = create.args.at(-1);
+      assert.ok(create.args.includes('-NonInteractive'));
+      assert.match(script, /New-ScheduledTaskTrigger -AtLogOn -User \$env:USERNAME/);
+      assert.match(script, /-LogonType Interactive -RunLevel Limited/);
+      assert.match(script, /Register-ScheduledTask -TaskName 'munni local helper'/);
+      assert.match(script, /autonomy\.cmd/);
+      assert.match(lo, /starts at every logon/);
+      assert.match(lo, /\[exit 0\]/);
+      const off = fakeRes();
+      await createApp({ token: 'tok', probeImpl: async () => false, spawnImpl: scriptedSpawn(spawned, () => '') })(
+        fakeReq({ method: 'POST', url: '/api/local/autonomy/logon', token: 'tok', body: { install: false } }), off);
+      await settle(off);
+      assert.match(spawned.at(-1).args.at(-1), /Unregister-ScheduledTask -TaskName 'munni local helper'/);
+    } else {
+      assert.match(lo, /Windows-only/);
+      assert.match(lo, /\[exit 1\]/);
+    }
+  } finally {
+    saveAutonomy(prevState);
+    for (const f of envFiles) rmSync(f, { force: true });
   }
 });
 
@@ -1082,4 +1449,32 @@ test('delete-everything epilogue: forget-all wipes registry, env stores, LAN mar
   runs.length = 0;
   await app(fakeReq({ method: 'POST', url: '/api/local/run', token: 'tok', body: { values: { NAS_GHCR_PAT: 'x' } } }), fakeRes());
   assert.ok(runs[0].args.join(' ').includes('--stack munni-local-shared'), 'zero environments → the shared stack takes the save');
+});
+
+test('ca trust + registry: fingerprints compare hex-only on the sha1 line; the registry probe reads anonymous pulls; unknown when unreachable', async () => {
+  const { caListingHasFingerprint } = await import('../setup/serve.mjs');
+  const fp = 'AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01';
+  assert.equal(caListingHasFingerprint('Cert Hash(sha1): ab cd ef 01 23 45 67 89 ab cd ef 01 23 45 67 89 ab cd ef 01\n', fp), true, 'spaced hex (older certutil)');
+  assert.equal(caListingHasFingerprint('Cert Hash(sha1): abcdef0123456789abcdef0123456789abcdef01', fp), true, 'compact hex');
+  assert.equal(caListingHasFingerprint('Cert Hash(sha1): 0000000000000000000000000000000000000000', fp), false);
+  assert.equal(caListingHasFingerprint('Cert Hash(sha256): abcdef0123456789abcdef0123456789abcdef01', fp), false, 'only the sha1 line counts');
+  assert.equal(caListingHasFingerprint('', fp), false);
+
+  const body = async (app2, path) => { const res = fakeRes(); await app2(fakeReq({ url: path, token: 'tok' }), res); return JSON.parse(res.chunks.join('')); };
+  const withToken = (manifest) => async (url) => (url.includes('/token?') ? { ok: true, status: 200, json: async () => ({ token: 'anon' }) } : manifest);
+  const pub = await body(createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl: withToken({ ok: true, status: 200 }) }), '/api/local/registry?force=1');
+  assert.equal(pub.public, true);
+  assert.match(pub.detail, /public/);
+  assert.match(pub.image, /^ghcr\.io\/.+\/munni-web$/);
+  const priv = await body(createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl: withToken({ ok: false, status: 401 }) }), '/api/local/registry?force=1');
+  assert.equal(priv.public, false);
+  assert.match(priv.detail, /401.*read:packages/);
+  const down = await body(createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl: async () => { throw new Error('offline'); } }), '/api/local/registry?force=1');
+  assert.equal(down.public, null);
+  assert.match(down.detail, /could not reach/);
+
+  // the trust probe: without LAN mode, off Windows, or with the CA site down the verdict is unknown — never a false "trusted"
+  const trust = await body(createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl: async () => ({ ok: false, status: 503 }) }), '/api/local/ca-trust?force=1');
+  assert.equal(trust.trusted, null);
+  assert.match(trust.reason, /LAN mode is off|not Windows|not up/);
 });
