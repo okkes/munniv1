@@ -42,8 +42,18 @@ mkdir -p import-watch
 #    the old volume, let 18 initialise the new volume, restore after up.
 #    The old volume stays untouched as the rollback.
 case "$COMPOSE_FILE" in
-  *staging*) PG_PROJECT="munni-staging"; PG_OLD="pgdata_staging"; PG_NEW="pgdata18_staging" ;;
-  *)         PG_PROJECT="$(basename "$(pwd)")"; PG_OLD="pgdata"; PG_NEW="pgdata18" ;;
+  *staging*)
+    # ONLY the live staging stack shares the prod folder under the
+    # munni-staging compose project. Any other folder (the iac twins,
+    # whose compose files also match *staging*) is its own project with
+    # default volume names — without this guard an iac-staging deploy
+    # would inspect/remove the LIVE staging volumes.
+    if [ "$(basename "$(pwd)")" = "munni" ]; then
+      PG_PROJECT="munni-staging"; PG_OLD="pgdata_staging"; PG_NEW="pgdata18_staging"
+    else
+      PG_PROJECT="$(basename "$(pwd)")"; PG_OLD="pgdata"; PG_NEW="pgdata18"
+    fi ;;
+  *) PG_PROJECT="$(basename "$(pwd)")"; PG_OLD="pgdata"; PG_NEW="pgdata18" ;;
 esac
 # r2: the r1 attempt restored into the image's TEMPORARY bootstrap
 # server (first-boot init) and died at its shutdown — the versioned
