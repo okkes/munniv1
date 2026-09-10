@@ -1485,7 +1485,10 @@ test('nas-probe: every host names the one-time step it is missing — dns, wildc
     if (/^https:\/\/munni-iac\.nas\.example\//.test(url)) return { status: 200, text: async () => '<html><title>Hello! Welcome to Synology Web Station!</title></html>' };
     if (/^https:\/\/munni-iac-api\.nas\.example\//.test(url)) throw tlsErr('ERR_TLS_CERT_ALTNAME_INVALID');
     if (/^https:\/\/munni-iac-admin\.nas\.example\//.test(url)) return { status: 502, text: async () => '' };
-    if (/^https:\/\/logto-iac\.nas\.example\//.test(url)) return { status: 302, text: async () => '' };
+    if (/^https:\/\/logto-iac\.nas\.example\//.test(url)) return { status: 302, headers: { get: (k) => (k === 'location' ? 'https://logto-iac.nas.example/sign-in' : null) }, text: async () => '' };
+    // no Web Station: DSM's default server sends an unmatched host to its own portal
+    if (/^https:\/\/glitchtip-iac\.nas\.example\//.test(url)) return { status: 302, headers: { get: (k) => (k === 'location' ? 'https://glitchtip-iac.nas.example:5001/' : null) }, text: async () => '' };
+    if (/^https:\/\/logto-iac-admin\.nas\.example\//.test(url)) return { status: 200, text: async () => '<html><script>SYNO.SDS.Session</script></html>' };
     if (/^https:\/\/vault-iac\.nas\.example\//.test(url)) throw tlsErr('ENOTFOUND');
     return { status: 200, text: async () => '<html><title>munni</title></html>' };
   };
@@ -1510,7 +1513,10 @@ test('nas-probe: every host names the one-time step it is missing — dns, wildc
   assert.ok(body.summary.rulesMissing >= 2, 'web (no-rule) and api (behind: no-rule) both count');
   assert.equal(prod.admin.state, 'no-container');
   assert.match(prod.admin.detail, /poller/);
-  assert.equal(prod.logto.state, 'up');
+  assert.equal(prod.logto.state, 'up', 'an app redirect (Logto → /sign-in) is a live host');
+  assert.equal(prod.glitchtip.state, 'no-rule', 'a redirect to DSM’s own port is no rule, not "up"');
+  assert.match(prod.glitchtip.detail, /portal/);
+  assert.equal(prod.logtoAdmin.state, 'no-rule', 'DSM’s page behind a 200 is no rule either');
   assert.equal(prod.vault.state, 'no-dns');
   assert.equal(body.summary.certificate, false);
   assert.equal(body.summary.dns, false);
