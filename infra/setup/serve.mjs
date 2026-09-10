@@ -33,6 +33,7 @@ import { lanHost, loadAutonomy, loadStack, localEnvRegistry, saveAutonomy, saveL
 import { jwtES256, jwtRS256, validate } from '../modules/validate.mjs';
 import { buildAccount, buildCipher, encString, vaultImport, vaultLogin, vaultPurge, vaultRegister } from '../modules/vault.mjs';
 import { zipEntry, zipNames } from '../modules/zip.mjs';
+import { proxyRules } from '../modules/dsm.mjs';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(DIR, '..', '..');
@@ -655,6 +656,78 @@ async function registryState(netFetchImpl, { force = false } = {}) {
 }
 async function registryEndpoint(res, url, netFetchImpl) {
   return json(res, 200, await registryState(netFetchImpl, { force: url.searchParams.get('force') === '1' }));
+}
+
+/* ── NAS readiness without any DSM credential (2026-09-10): seen from
+   outside, every reverse-proxy host tells which one-time step is still
+   missing — DNS, the wildcard certificate (TLS fails by name), the rule
+   (DSM answers with Web Station's welcome page when nothing matches),
+   the containers (a rule answering 502 has nothing behind it yet: no
+   bundle applied → the poller task is missing or Deploy never ran). ── */
+const NAS_STACKS = ['munni-iac-prod', 'munni-iac-staging'];
+const NAS_HOST_KEYS = ['web', 'api', 'admin', 'logto', 'logtoAdmin', 'glitchtip', 'vault'];
+export function nasHosts(domain) {
+  const prev = process.env.IAC_DOMAIN;
+  process.env.IAC_DOMAIN = domain;
+  try {
+    return NAS_STACKS.map((name) => {
+      const st = loadStack(name);
+      return { stack: name, hosts: proxyRules(st).map((r, i) => ({ key: NAS_HOST_KEYS[i] ?? String(i), host: r.host })) };
+    });
+  } finally {
+    if (prev === undefined) delete process.env.IAC_DOMAIN; else process.env.IAC_DOMAIN = prev;
+  }
+}
+const NAS_CERT_CODES = new Set(['UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID']);
+/** what answers on the host: a rule (munni or a 502 behind it) or DSM itself */
+async function classifyNasAnswer(host, fetchImpl) {
+  const res = await fetchImpl(`https://${host}/`, { redirect: 'manual', signal: AbortSignal.timeout(10000) });
+  const text = res.status < 400 && typeof res.text === 'function' ? String(await res.text()).slice(0, 6000) : '';
+  if (/Synology Web Station/i.test(text)) return { state: 'no-rule', detail: 'DSM answers with Web Station’s welcome page — no reverse-proxy rule for this host yet; Bootstrap writes it once the deploy account may use DSM' };
+  if (/DiskStation/i.test(text)) return { state: 'no-rule', detail: 'DSM’s own portal answers — no reverse-proxy rule for this host yet; Bootstrap writes it once the deploy account may use DSM' };
+  if ([502, 503, 504].includes(res.status)) return { state: 'no-container', detail: `the rule exists but nothing answers behind it (${res.status}) — no bundle applied yet: create the Task Scheduler poller and run Deploy` };
+  return { state: 'up', detail: `answers (${res.status})` };
+}
+export async function probeNasHost(host, netFetchImpl, insecureImpl = null) {
+  try {
+    return { host, ...(await classifyNasAnswer(host, netFetchImpl)) };
+  } catch (e) {
+    const code = e.cause?.code ?? e.code ?? e.name;
+    if (code === 'ERR_TLS_CERT_ALTNAME_INVALID' || NAS_CERT_CODES.has(code)) {
+      const detail = code === 'ERR_TLS_CERT_ALTNAME_INVALID'
+        ? 'the certificate does not cover this host — DSM needs the Let’s Encrypt certificate WITH the wildcard (*.<domain>), set as default'
+        : `the certificate is not trusted (${code}) — issue a Let’s Encrypt certificate in DSM and set it as default`;
+      // a second, deliberately unverified look: the certificate hides
+      // nothing about the rule behind it — say both at once
+      let behind = null;
+      if (insecureImpl) behind = await classifyNasAnswer(host, insecureImpl).catch(() => null);
+      return { host, state: 'no-cert', detail, ...(behind ? { behind: behind.state, behindDetail: behind.detail } : {}) };
+    }
+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return { host, state: 'no-dns', detail: 'the name does not resolve — Synology DDNS resolves *.<domain> by itself; an own domain needs a wildcard record' };
+    return { host, state: 'unreachable', detail: `no answer (${code})` };
+  }
+}
+let nasProbeMemo = { at: 0, domain: null, value: null };
+async function nasProbeEndpoint(res, url, netFetchImpl, insecureImpl) {
+  const domain = String(url.searchParams.get('domain') ?? '').trim().toLowerCase();
+  if (!/^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(domain)) return json(res, 400, { error: 'domain must be a hostname (e.g. yourname.synology.me)' });
+  const force = url.searchParams.get('force') === '1';
+  if (!force && nasProbeMemo.value && nasProbeMemo.domain === domain && Date.now() - nasProbeMemo.at < 30000) return json(res, 200, nasProbeMemo.value);
+  const stacks = await Promise.all(nasHosts(domain).map(async (s) => ({ ...s, hosts: await Promise.all(s.hosts.map(async (h) => ({ ...h, ...(await probeNasHost(h.host, netFetchImpl, insecureImpl)) }))) })));
+  const all = stacks.flatMap((s) => s.hosts);
+  const count = (state) => all.filter((h) => h.state === state || h.behind === state).length;
+  const summary = {
+    hosts: all.length,
+    up: count('up'),
+    dns: all.filter((h) => h.state === 'no-dns').length === 0,
+    certificate: all.filter((h) => h.state === 'no-cert').length === 0 && all.filter((h) => h.state === 'no-dns').length < all.length,
+    rulesMissing: count('no-rule'),
+    containersMissing: count('no-container'),
+    unreachable: all.filter((h) => h.state === 'unreachable').length,
+  };
+  const value = { domain, stacks, summary };
+  nasProbeMemo = { at: Date.now(), domain, value };
+  return json(res, 200, value);
 }
 
 /* ── store readiness (user ruling 2026-08-28: no manual Enable-publish
@@ -2199,6 +2272,7 @@ export function createApp({ token, probeImpl = probe, runImpl = runToStream, val
     'POST /api/local/trust-ca': (req, res) => trustCaEndpoint(res, spawnImpl, netFetchImpl),
     'GET /api/local/ca-trust': (req, res) => caTrustEndpoint(res, new URL(req.url, 'http://localhost'), netFetchImpl, spawnImpl),
     'GET /api/local/registry': (req, res) => registryEndpoint(res, new URL(req.url, 'http://localhost'), netFetchImpl),
+    'GET /api/local/nas-probe': (req, res) => nasProbeEndpoint(res, new URL(req.url, 'http://localhost'), netFetchImpl, vaultFetchImpl),
     'POST /api/local/gh-pat': (req, res) => ghPatEndpoint(req, res),
     'GET /api/local/secrets': (req, res) => secretsEndpoint(res),
     'GET /api/local/vault-export': (req, res) => vaultExportEndpoint(res),
