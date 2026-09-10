@@ -105,6 +105,16 @@ jobs:
           set -euo pipefail
           cp "$RUNNER_TEMP/bundle.tgz" "$RUNNER_TEMP/${{ steps.bundle.outputs.bundle }}"
           cp "$RUNNER_TEMP/stamp.txt" "$RUNNER_TEMP/${{ steps.bundle.outputs.stamp }}"
+          # the poller itself lives in the live dir — the PARENT of the
+          # published folder (the one rule: dsm.mjs publishedPathParts) —
+          # shipped here on every deploy, so nothing is copied by hand
+          # (the scheduled task runs a throwaway copy, so overwriting is safe)
+          : "${SYNOLOGY_PATH:?SYNOLOGY_PATH secret missing}"
+          LIVE="${SYNOLOGY_PATH%/}"; LIVE="${LIVE%/*}"
+          if [ -z "$LIVE" ] || [ "$LIVE" = "${SYNOLOGY_PATH%/}" ]; then
+            echo "::error::SYNOLOGY_PATH must be a folder inside a shared folder, e.g. /docker/munni/published"; exit 1
+          fi
+          SYNOLOGY_PATH="$LIVE" bash deploy/nas/upload.sh deploy/nas/apply.sh
           bash deploy/nas/upload.sh \
             "$RUNNER_TEMP/${{ steps.bundle.outputs.bundle }}" \
             "$RUNNER_TEMP/${{ steps.bundle.outputs.stamp }}"
@@ -158,6 +168,14 @@ jobs:
           VARS_JSON: ${{ toJSON(vars) }}
       - name: Upload to Synology FileStation (bundle first, stamp last)
         run: |
+          set -euo pipefail
+          # the poller rides along (see the live job above)
+          : "${SYNOLOGY_PATH:?SYNOLOGY_PATH secret missing}"
+          LIVE="${SYNOLOGY_PATH%/}"; LIVE="${LIVE%/*}"
+          if [ -z "$LIVE" ] || [ "$LIVE" = "${SYNOLOGY_PATH%/}" ]; then
+            echo "::error::SYNOLOGY_PATH must be a folder inside a shared folder, e.g. /docker/munni/published"; exit 1
+          fi
+          SYNOLOGY_PATH="$LIVE" bash deploy/nas/upload.sh deploy/nas/apply.sh
           bash deploy/nas/upload.sh \
             "$RUNNER_TEMP/${{ steps.bundle.outputs.bundle }}" \
             "$RUNNER_TEMP/${{ steps.bundle.outputs.stamp }}"
