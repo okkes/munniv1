@@ -25,7 +25,8 @@ import { applyApps, applyBranding, applySocialConnectors, writeBack } from './mo
 import { applyGlitchTip, writeBackDsns } from './modules/glitchtip.mjs';
 import { renderStack } from './modules/render.mjs';
 import { renderRunbook, renderLocalRunbook } from './modules/runbook.mjs';
-import { applyReverseProxy } from './modules/dsm.mjs';
+import { readFileSync } from 'node:fs';
+import { applyReverseProxy, ensureWildcardCertificate, ensureLiveDir, ensurePollerTask, inspectNas, proxyRules, dsmAdvice, isPermissionError } from './modules/dsm.mjs';
 import { localAwareFetch } from './modules/insecure-fetch.mjs';
 
 const args = process.argv.slice(2);
@@ -63,7 +64,7 @@ function envSecret(env, name) {
 // found live 2026-09-10) while every reverse-proxy host is a subdomain —
 // say so instead of printing a bare error code
 const TLS_HINTS = {
-  ERR_TLS_CERT_ALTNAME_INVALID: (host) => `the certificate DSM serves does not cover ${host} — DSM → Control Panel → Security → Certificate → Add → Get a certificate from Let's Encrypt → your DDNS domain WITH the wildcard (*.<domain>) → set as default (own domain: acme.sh with the synology_dsm hook, docs/iac-plan.md §4)`,
+  ERR_TLS_CERT_ALTNAME_INVALID: (host) => `the certificate DSM serves does not cover ${host} — the prod twin's bootstrap (apply) requests the wildcard (*.<domain>) through DSM and binds the rules to it once the deploy account may use DSM (own domain: acme.sh with the synology_dsm hook, docs/iac-plan.md §4)`,
   UNABLE_TO_VERIFY_LEAF_SIGNATURE: (host) => `the certificate chain of ${host} is not trusted — a self-signed or incomplete certificate on the NAS; issue a Let's Encrypt one in DSM`,
   DEPTH_ZERO_SELF_SIGNED_CERT: (host) => `${host} serves a self-signed certificate — issue a Let's Encrypt one in DSM (Control Panel → Security → Certificate)`,
   CERT_HAS_EXPIRED: (host) => `the certificate of ${host} has expired — renew it in DSM (Control Panel → Security → Certificate)`,
@@ -243,6 +244,26 @@ async function ciVerify() {
   if (missing.length) console.log(`  ✗ secrets missing from ${stack.githubEnvironment}: ${missing.join(', ')}`);
   else console.log(`  ✓ secrets manifest satisfied (${stack.githubEnvironment})`);
   if (unmanaged.length) console.log(`  ! unmanaged secrets present (add to manifest or remove): ${unmanaged.join(', ')}`);
+  // what the NAS holds (read-only): the wildcard certificate and the poller task
+  const { SYNOLOGY_URL, SYNOLOGY_USER, SYNOLOGY_PASS, SYNOLOGY_PATH } = process.env;
+  if (SYNOLOGY_URL && SYNOLOGY_USER && SYNOLOGY_PASS) {
+    try {
+      const nas = await inspectNas({ url: SYNOLOGY_URL, user: SYNOLOGY_USER, pass: SYNOLOGY_PASS }, { domain: stack.domain, publishedPath: SYNOLOGY_PATH ?? '', hosts: proxyRules(stack).map((r) => r.host) });
+      const w = nas.wildcard;
+      if (!w) console.log('  ✗ dsm: no wildcard certificate — the prod twin\'s bootstrap (apply) requests one through DSM');
+      else if (w.expired) console.log(`  ✗ dsm: the wildcard certificate ${w.id} expired (${w.validTill}) — the prod twin's bootstrap (apply) requests a new one`);
+      else console.log(`  ${w.isDefault ? '✓' : '!'} dsm: wildcard certificate ${w.id}${w.isDefault ? ' is the default' : ' exists but is NOT the default'} (valid till ${w.validTill})`);
+      if (nas.bindings) {
+        const b = nas.bindings;
+        const total = b.bound.length + b.elsewhere.length + b.noRule.length;
+        console.log(`  ${b.elsewhere.length || b.noRule.length ? '✗' : '✓'} dsm: ${b.bound.length} of ${total} rules use the wildcard certificate${b.elsewhere.length ? ` — on another certificate: ${b.elsewhere.join(', ')} (bootstrap apply moves them)` : ''}${b.noRule.length ? ` — no rule yet: ${b.noRule.join(', ')}` : ''}`);
+      }
+      console.log(nas.task ? `  ${nas.task.enabled ? '✓' : '!'} dsm: poller task exists${nas.task.enabled ? '' : ' but is disabled'}${nas.liveDir ? ` (live dir ${nas.liveDir})` : ''}` : `  ✗ dsm: no poller task — the prod twin's bootstrap (apply) creates it${nas.liveDir ? ` (live dir ${nas.liveDir})` : ''}`);
+      if (nas.liveDirError) console.log(`  ! dsm: ${nas.liveDirError}`);
+    } catch (e) {
+      console.log(`  ✗ dsm: could not read the NAS (${e.message})${dsmAdvice(e)}`);
+    }
+  }
   const allUp = await probeAll();
   return missing.length || !allUp ? 1 : 0;
 }
@@ -300,22 +321,64 @@ async function ciApply() {
     console.log('  glitchtip: waiting for IAC_GLITCHTIP_API_TOKEN (see the runbook) — org/DSNs not ensured yet');
   }
 
-  // DSM reverse proxy as code — runs whenever the deploy account creds
-  // are in the shell (CI injects SYNOLOGY_*; locally: export them)
-  const { SYNOLOGY_URL, SYNOLOGY_USER, SYNOLOGY_PASS } = process.env;
+  // DSM as code — runs whenever the deploy account creds are in the
+  // shell (CI injects SYNOLOGY_*; locally: export them): the reverse-proxy
+  // rules, the wildcard certificate the https hosts need (+ the rules
+  // bound to it), the live dir and the Task Scheduler poller that applies
+  // uploaded bundles (2026-09-10). Every call is administrator-only: the
+  // ONE manual step is the account. The pair's prod twin OWNS the
+  // NAS-wide pieces (one certificate, one live dir, one poller per NAS —
+  // both twins share <domain> and SYNOLOGY_PATH); staging only binds its
+  // own rules to the certificate it finds, so two runs never race for a
+  // Let's Encrypt request.
+  const { SYNOLOGY_URL, SYNOLOGY_USER, SYNOLOGY_PASS, SYNOLOGY_PATH } = process.env;
+  let nasErrors = 0;
   if (SYNOLOGY_URL && SYNOLOGY_USER && SYNOLOGY_PASS) {
-    try {
-      const result = await applyReverseProxy(stack, { url: SYNOLOGY_URL, user: SYNOLOGY_USER, pass: SYNOLOGY_PASS });
-      console.log(`  dsm: reverse proxy created=[${result.created}] updated=[${result.updated}] unchanged=${result.unchanged.length}`);
-    } catch (e) {
-      console.log(`  dsm: reverse-proxy apply failed (${e.message}) — check the deploy account's DSM admin rights`);
+    const creds = { url: SYNOLOGY_URL, user: SYNOLOGY_USER, pass: SYNOLOGY_PASS };
+    const owner = stack.role === 'prod';
+    const hosts = proxyRules(stack).map((r) => r.host);
+    // one step: prints its outcome; counts a failure unless it is the account's rights (expected until fixed)
+    const nasStep = async (label, fn) => {
+      try {
+        const r = await fn();
+        console.log(`  dsm: ${label} ${r.state} — ${r.detail}`);
+        return r;
+      } catch (e) {
+        if (!isPermissionError(e)) nasErrors++;
+        console.log(`  dsm: ${label} failed (${e.message})${dsmAdvice(e)}`);
+        return null;
+      }
+    };
+    const proxy = await nasStep('reverse proxy', async () => {
+      const r = await applyReverseProxy(stack, creds);
+      return { state: 'applied', detail: `created=[${r.created}] updated=[${r.updated}] unchanged=${r.unchanged.length}` };
+    });
+    if (proxy) {
+      // Let's Encrypt wants a contact; the DDNS domain's own mailbox name is the honest default
+      const email = process.env.IAC_ACME_EMAIL || `admin@${stack.domain}`;
+      await nasStep(owner ? 'wildcard certificate' : 'certificate (the prod twin requests it)', () => ensureWildcardCertificate(creds, { domain: stack.domain, probeHost: stack.host('web'), email, hosts, owner }));
+      if (!owner) {
+        console.log('  dsm: the live dir and the poller task belong to the prod twin (one per NAS) — nothing to do here');
+      } else if (!SYNOLOGY_PATH) {
+        console.log('  dsm: SYNOLOGY_PATH not in env — the live dir and the poller task are not ensured this run');
+      } else {
+        const applyScript = readFileSync(new URL('../deploy/nas/apply.sh', import.meta.url), 'utf8');
+        await nasStep('live dir', () => ensureLiveDir(creds, { publishedPath: SYNOLOGY_PATH, applyScript }));
+        await nasStep('poller task', () => ensurePollerTask(creds, { publishedPath: SYNOLOGY_PATH }));
+      }
+    } else {
+      console.log('  dsm: certificate, live dir and poller task skipped until the deploy account may use DSM');
     }
   } else {
-    console.log('  dsm: SYNOLOGY_URL/USER/PASS not in env — reverse-proxy rules not applied this run');
+    console.log('  dsm: SYNOLOGY_URL/USER/PASS not in env — reverse-proxy rules, certificate and poller task not applied this run');
   }
 
   const runbook = renderRunbook(stack, { minted, missingOperator });
   console.log(`  runbook → ${runbook}`);
+  if (nasErrors) {
+    console.log(`✗ ${nasErrors} NAS step${nasErrors === 1 ? '' : 's'} failed for a reason other than the deploy account's rights — see the dsm: lines above; the next run retries (every step is idempotent).`);
+    return 1;
+  }
   console.log('done. Next: follow the runbook top-to-bottom (first run) or --verify (steady state).');
   return 0;
 }
