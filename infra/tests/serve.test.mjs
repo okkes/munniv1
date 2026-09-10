@@ -1478,3 +1478,43 @@ test('ca trust + registry: fingerprints compare hex-only on the sha1 line; the r
   assert.equal(trust.trusted, null);
   assert.match(trust.reason, /LAN mode is off|not Windows|not up/);
 });
+
+test('nas-probe: every host names the one-time step it is missing — dns, wildcard certificate, reverse-proxy rule, applied bundle', async () => {
+  const tlsErr = (code) => { const e = new Error('fetch failed'); e.cause = { code }; return e; };
+  const netFetchImpl = async (url) => {
+    if (/^https:\/\/munni-iac\.nas\.example\//.test(url)) return { status: 200, text: async () => '<html><title>Hello! Welcome to Synology Web Station!</title></html>' };
+    if (/^https:\/\/munni-iac-api\.nas\.example\//.test(url)) throw tlsErr('ERR_TLS_CERT_ALTNAME_INVALID');
+    if (/^https:\/\/munni-iac-admin\.nas\.example\//.test(url)) return { status: 502, text: async () => '' };
+    if (/^https:\/\/logto-iac\.nas\.example\//.test(url)) return { status: 302, text: async () => '' };
+    if (/^https:\/\/vault-iac\.nas\.example\//.test(url)) throw tlsErr('ENOTFOUND');
+    return { status: 200, text: async () => '<html><title>munni</title></html>' };
+  };
+  // the unverified second look after a name mismatch sees Web Station behind the api host
+  const vaultFetchImpl = async () => ({ status: 200, text: async () => '<title>Hello! Welcome to Synology Web Station!</title>' });
+  const app2 = createApp({ token: 'tok', probeImpl: async () => false, netFetchImpl, vaultFetchImpl });
+  const bad = fakeRes();
+  await app2(fakeReq({ url: '/api/local/nas-probe?domain=not%20a%20host', token: 'tok' }), bad);
+  assert.equal(bad.statusCode, 400);
+  const res = fakeRes();
+  await app2(fakeReq({ url: '/api/local/nas-probe?domain=nas.example&force=1', token: 'tok' }), res);
+  assert.equal(res.statusCode, 200);
+  const body = JSON.parse(res.chunks.join(''));
+  assert.deepEqual(body.stacks.map((s) => s.stack), ['munni-iac-prod', 'munni-iac-staging']);
+  const prod = Object.fromEntries(body.stacks[0].hosts.map((h) => [h.key, h]));
+  assert.equal(prod.web.host, 'munni-iac.nas.example');
+  assert.equal(prod.web.state, 'no-rule');
+  assert.match(prod.web.detail, /Web Station/);
+  assert.equal(prod.api.state, 'no-cert');
+  assert.match(prod.api.detail, /wildcard/);
+  assert.equal(prod.api.behind, 'no-rule', 'the certificate hides nothing: the rule state is read unverified');
+  assert.ok(body.summary.rulesMissing >= 2, 'web (no-rule) and api (behind: no-rule) both count');
+  assert.equal(prod.admin.state, 'no-container');
+  assert.match(prod.admin.detail, /poller/);
+  assert.equal(prod.logto.state, 'up');
+  assert.equal(prod.vault.state, 'no-dns');
+  assert.equal(body.summary.certificate, false);
+  assert.equal(body.summary.dns, false);
+  assert.ok(body.summary.rulesMissing >= 1);
+  assert.ok(body.summary.containersMissing >= 1);
+  assert.equal(process.env.IAC_DOMAIN, undefined, 'the probe restores the environment it borrowed');
+});
