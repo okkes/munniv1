@@ -1,5 +1,5 @@
 import { createSign, sign as cryptoSign } from 'node:crypto';
-import { dsmLogin, dsmLogout } from './dsm.mjs';
+import { dsmLogin, dsmLogout, DSM_CODE_ADVICE, isTransport, publishedPathParts } from './dsm.mjs';
 import { localAwareFetch } from './insecure-fetch.mjs';
 import { loadStack, localEnvRegistry } from './stack.mjs';
 
@@ -40,7 +40,7 @@ export function jwtES256({ header, payload, pem }) {
 export const DSM_LOGIN_ADVICE = {
   400: 'no such account, or the password is wrong',
   401: 'the account is disabled (DSM → Control Panel → User & Group)',
-  402: 'permission denied — the account exists but may not sign in to DSM: Control Panel → User & Group → the deploy user → Applications → allow DSM and File Station; and it must be in the administrators group (reverse-proxy rules need admin rights)',
+  402: DSM_CODE_ADVICE[402], // one text with the bootstrap's own advice
   403: '2-step verification is on for this account — turn it off for the deploy user (the login API cannot answer an OTP prompt)',
   404: 'the 2-step verification code was rejected — turn 2FA off for the deploy user',
   406: 'DSM enforces 2-factor authentication for this account — exempt the deploy user (Control Panel → Security → Account)',
@@ -299,11 +299,16 @@ export const VALIDATORS = {
     const gap = need(values, ['SYNOLOGY_URL', 'SYNOLOGY_USER', 'SYNOLOGY_PASS']);
     if (gap) return { ok: false, detail: gap };
     if (values.SYNOLOGY_PATH && !values.SYNOLOGY_PATH.startsWith('/')) return { ok: false, detail: `SYNOLOGY_PATH must be absolute — the shared-folder path bundles land in, e.g. /docker/munni/published (yours: ${values.SYNOLOGY_PATH})` };
+    if (values.SYNOLOGY_PATH) {
+      // the live dir (apply.sh, the poller) is the PARENT of this path — it needs one inside the share
+      try { publishedPathParts(values.SYNOLOGY_PATH); } catch (e) { return { ok: false, detail: e.message }; }
+    }
     try {
       const { sid } = await dsmLogin(values.SYNOLOGY_URL, values.SYNOLOGY_USER, values.SYNOLOGY_PASS);
       await dsmLogout(values.SYNOLOGY_URL, sid);
       return { ok: true, detail: 'DSM accepted the login (remember: the account needs admin rights, 2FA off)' };
     } catch (e) {
+      if (isTransport(e)) return { ok: false, unreachable: true, detail: `could not reach DSM at ${values.SYNOLOGY_URL} (${e.message}) — is the NAS up, the port right, the firewall open for this machine?` };
       return { ok: false, detail: `DSM refused the login: ${e.message}${dsmLoginAdvice(e.message)}` };
     }
   },
