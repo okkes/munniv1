@@ -36,6 +36,8 @@ export function insecureFetch(url, init = {}) {
           resolve({
             ok: res.statusCode >= 200 && res.statusCode < 300,
             status: res.statusCode,
+            // the few header reads callers make (a redirect's Location)
+            headers: { get: (k) => { const v = res.headers[String(k).toLowerCase()]; return v == null ? null : (Array.isArray(v) ? v.join(', ') : String(v)); } },
             text: async () => body,
             json: async () => JSON.parse(body),
           });
