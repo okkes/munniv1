@@ -139,7 +139,7 @@ test('logodev: swap detection first, then search (sk) + image (pk)', async () =>
 
 test('synology: DSM error codes come with advice; a relative path is refused before any login', async () => {
   const { dsmLoginAdvice } = await import('../modules/validate.mjs');
-  assert.match(dsmLoginAdvice('DSM SYNO.API.Auth.login failed: {"code":402}'), /code 402: permission denied/);
+  assert.match(dsmLoginAdvice('DSM SYNO.API.Auth.login failed: {"code":402}'), /code 402: the DSM application is denied/);
   assert.match(dsmLoginAdvice('DSM SYNO.API.Auth.login failed: {"code":400}'), /password is wrong/);
   assert.equal(dsmLoginAdvice('DSM SYNO.API.Auth.login failed: {"code":999}'), '');
   const rel = await validate('synology', { SYNOLOGY_URL: 'https://nas.example:5001', SYNOLOGY_USER: 'deploy', SYNOLOGY_PASS: 'x', SYNOLOGY_PATH: 'docker/munni/published' });
