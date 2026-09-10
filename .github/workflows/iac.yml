@@ -19,12 +19,17 @@ on:
         description: 'Comma-separated generated secrets to re-mint (--rotate)'
         type: string
         default: ''
+      chain:
+        description: 'After a green apply, run next (comma-separated, in order): staging (the twin; prod only), deploy (this twin), deploy-both'
+        type: string
+        default: ''
   push:
     branches: [dev]
     paths: ['infra/**', '.github/workflows/iac.yml']
 
 permissions:
   contents: read
+  actions: write # the chain step dispatches the next run (GITHUB_TOKEN fallback)
 
 jobs:
   bootstrap:
@@ -32,6 +37,13 @@ jobs:
     # wizard marks the repo initialized (variable MUNNI_INITIALIZED)
     if: ${{ vars.MUNNI_INITIALIZED == 'true' }}
     runs-on: ubuntu-latest
+    # one run per stack at a time — two applies of the same stack must
+    # never race (list-before-create). The twins keep separate groups:
+    # the prod twin owns the NAS-wide pieces (certificate, live dir,
+    # poller), so they never race for a Let's Encrypt request either.
+    concurrency:
+      group: iac-${{ matrix.stack }}
+      cancel-in-progress: false
     strategy:
       matrix:
         stack: ${{ github.event_name == 'push' && fromJSON('["munni-iac-prod","munni-iac-staging"]') || fromJSON(format('["{0}"]', inputs.stack)) }}
@@ -52,21 +64,20 @@ jobs:
         # the setup wizard can point straight at it.
         run: |
           set -o pipefail
-          MODE_FLAG=""
+          FLAGS=()
           if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.verify_only }}" = "true" ]; then
-            MODE_FLAG="--verify"
+            FLAGS+=(--verify)
           fi
-          ROTATE_FLAG=""
-          if [ -n "${{ inputs.rotate }}" ] && [ -z "$MODE_FLAG" ]; then
-            ROTATE_FLAG="--rotate ${{ inputs.rotate }}"
+          if [ -n "${{ inputs.rotate }}" ] && [ "${#FLAGS[@]}" -eq 0 ]; then
+            FLAGS+=(--rotate "${{ inputs.rotate }}")
           fi
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           rc=0
-          node infra/bootstrap.mjs --stack "${{ matrix.stack }}" $MODE_FLAG $ROTATE_FLAG 2>&1 \
+          node infra/bootstrap.mjs --stack "${{ matrix.stack }}" "${FLAGS[@]}" 2>&1 \
             | tee -a "$GITHUB_STEP_SUMMARY" || rc=$?
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           if [ "$rc" -ne 0 ]; then
-            if [ -n "$MODE_FLAG" ]; then
+            if [ "${FLAGS[0]:-}" = "--verify" ]; then
               echo "::warning::verify reported gaps (expected until the runbook's manual steps are done)"
               exit 0
             fi
@@ -90,6 +101,36 @@ jobs:
           SYNOLOGY_URL: ${{ secrets.SYNOLOGY_URL }}
           SYNOLOGY_USER: ${{ secrets.SYNOLOGY_USER }}
           SYNOLOGY_PASS: ${{ secrets.SYNOLOGY_PASS }}
+          # the poller task runs in the live dir next to this published folder
+          SYNOLOGY_PATH: ${{ secrets.SYNOLOGY_PATH }}
+          # Let's Encrypt contact for the wildcard certificate DSM requests (optional)
+          IAC_ACME_EMAIL: ${{ secrets.IAC_ACME_EMAIL }}
+      - name: Chain the next run
+        # the wizard dispatches the prod twin with chain=staging,deploy-both:
+        # staging follows (it binds its rules to the certificate prod just
+        # ensured), then Deploy for both — no click left after the account fix
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_only != true && inputs.chain != '' }}
+        run: |
+          set -euo pipefail
+          chain="${{ inputs.chain }}"
+          head="${chain%%,*}"
+          rest="${chain#*,}"
+          if [ "$rest" = "$chain" ]; then rest=""; fi
+          case "$head" in
+            staging)
+              gh workflow run iac.yml --ref "$GITHUB_REF_NAME" -f stack=munni-iac-staging -f chain="$rest"
+              echo "chained: Bootstrap munni-iac-staging (then: ${rest:-nothing})" >> "$GITHUB_STEP_SUMMARY" ;;
+            deploy)
+              gh workflow run deploy-nas.yml --ref "$GITHUB_REF_NAME" -f channel="${{ matrix.stack == 'munni-iac-prod' && 'iac-prod' || 'iac-staging' }}"
+              echo "chained: Deploy ${{ matrix.stack }}" >> "$GITHUB_STEP_SUMMARY" ;;
+            deploy-both)
+              gh workflow run deploy-nas.yml --ref "$GITHUB_REF_NAME" -f channel=iac-both
+              echo "chained: Deploy both twins" >> "$GITHUB_STEP_SUMMARY" ;;
+            *)
+              echo "::warning::unknown chain step '$head' — nothing chained" ;;
+          esac
+        env:
+          GH_TOKEN: ${{ secrets.IAC_GH_PAT || secrets.GITHUB_TOKEN }}
       - name: Upload rendered stack + runbook
         uses: actions/upload-artifact@v7
         with:
