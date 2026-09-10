@@ -680,12 +680,18 @@ export function nasHosts(domain) {
 }
 const NAS_CERT_CODES = new Set(['UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID']);
 /** what answers on the host: a rule (munni or a 502 behind it) or DSM itself */
+/** DSM's own front door: its ports, or its web app's path */
+const DSM_PORTAL = /^https?:\/\/[^/]+:(5000|5001)(\/|$)|\/webman\//i;
 async function classifyNasAnswer(host, fetchImpl) {
   const res = await fetchImpl(`https://${host}/`, { redirect: 'manual', signal: AbortSignal.timeout(10000) });
   const text = res.status < 400 && typeof res.text === 'function' ? String(await res.text()).slice(0, 6000) : '';
-  if (/Synology Web Station/i.test(text)) return { state: 'no-rule', detail: 'DSM answers with Web Station’s welcome page — no reverse-proxy rule for this host yet; Bootstrap writes it once the deploy account may use DSM' };
-  if (/DiskStation/i.test(text)) return { state: 'no-rule', detail: 'DSM’s own portal answers — no reverse-proxy rule for this host yet; Bootstrap writes it once the deploy account may use DSM' };
-  if ([502, 503, 504].includes(res.status)) return { state: 'no-container', detail: `the rule exists but nothing answers behind it (${res.status}) — no bundle applied yet: create the Task Scheduler poller and run Deploy` };
+  const noRule = (how) => ({ state: 'no-rule', detail: `${how} — no reverse-proxy rule for this host yet; Bootstrap writes it once the deploy account may use DSM` });
+  if (/Synology Web Station/i.test(text)) return noRule('DSM answers with Web Station’s welcome page');
+  // without Web Station, DSM's default server sends an unmatched host to its own portal (:5001, /webman/)
+  const location = res.status >= 300 && res.status < 400 ? String(res.headers?.get?.('location') ?? '') : '';
+  if (location && DSM_PORTAL.test(location)) return noRule(`DSM redirects to its own portal (${location})`);
+  if (/DiskStation|SYNO\.SDS|\/webman\//i.test(text)) return noRule('DSM’s own portal answers');
+  if ([502, 503, 504].includes(res.status)) return { state: 'no-container', detail: `the rule exists but nothing answers behind it (${res.status}) — no bundle applied yet: Bootstrap (prod twin) creates the poller task when SYNOLOGY_PATH is stored, Deploy uploads the bundle, the poller applies it within five minutes` };
   return { state: 'up', detail: `answers (${res.status})` };
 }
 export async function probeNasHost(host, netFetchImpl, insecureImpl = null) {
@@ -695,8 +701,8 @@ export async function probeNasHost(host, netFetchImpl, insecureImpl = null) {
     const code = e.cause?.code ?? e.code ?? e.name;
     if (code === 'ERR_TLS_CERT_ALTNAME_INVALID' || NAS_CERT_CODES.has(code)) {
       const detail = code === 'ERR_TLS_CERT_ALTNAME_INVALID'
-        ? 'the certificate does not cover this host — DSM needs the Let’s Encrypt certificate WITH the wildcard (*.<domain>), set as default'
-        : `the certificate is not trusted (${code}) — issue a Let’s Encrypt certificate in DSM and set it as default`;
+        ? 'the certificate does not cover this host — Bootstrap (prod twin) requests the wildcard (*.<domain>) through DSM and binds the rules to it once the deploy account may use DSM (own domain: acme.sh with the synology_dsm hook)'
+        : `the certificate is not trusted (${code}) — Bootstrap (prod twin) requests a Let’s Encrypt certificate through DSM once the deploy account may use DSM${code === 'CERT_HAS_EXPIRED' ? ' (an expired wildcard is replaced)' : ''}`;
       // a second, deliberately unverified look: the certificate hides
       // nothing about the rule behind it — say both at once
       let behind = null;
