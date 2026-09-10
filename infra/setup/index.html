@@ -338,6 +338,12 @@ html{scrollbar-gutter:stable} /* the scroll lock must not reflow the page (the g
   <div class="runrow"><button data-dispatch-nas="iac-both">Deploy both twins</button><button class="ghost" data-dispatch-nas="iac-prod">Only prod</button><button class="ghost" data-dispatch-nas="iac-staging">Only staging</button></div>
   <div id="runs-nas"></div>
   <div class="msg" id="msg-nas"></div>
+  <!-- seen from outside, without any DSM credential: which one-time step each host still misses (2026-09-10) -->
+  <div class="card" id="nas-ready" hidden>
+    <div class="health-h"><span class="ico" data-ico="pulse"></span><div><b>NAS readiness</b><div class="why" style="margin:0" id="nas-ready-sub">probing the hosts…</div></div><button class="ghost" id="btn-nas-probe">Probe again</button></div>
+    <ul class="health-list" id="nas-ready-list"></ul>
+    <div class="msg" id="msg-nas-ready"></div>
+  </div>
   <div class="card">
     <h3>Still manual on the NAS (once) — three DSM screens</h3>
     <p class="why">What the two workflows do: <b>Bootstrap</b> (the step above) mints the environments AND writes every reverse-proxy rule through the DSM API — its output line <code>dsm: reverse-proxy apply failed</code> means the deploy account may not use DSM (code 402/119): Control Panel → User &amp; Group → the deploy user → Applications → allow DSM + File Station, administrators group, then run Bootstrap again. <b>Deploy</b> only uploads the bundle; the poller below applies it within five minutes. <b>Certificate</b>: every reverse-proxy host is https, so DSM needs a certificate that covers <code class="dom">*.&lt;domain&gt;</code> — the DDNS default covers only <code class="dom">&lt;domain&gt;</code> itself (found live: a browser then refuses <code class="dom">munni-iac.&lt;domain&gt;</code>). Once: Control Panel → Security → Certificate → Add → Get a certificate from Let’s Encrypt → your DDNS domain WITH the wildcard option → set as default (the rules use the default). Own domain: acme.sh with the synology_dsm hook (docs/iac-plan.md §4). Bootstrap’s Verify names every host the certificate misses. The DSM firewall API is too fragile to automate safely, so bootstrap only PROBES the firewall.</p>
@@ -1145,6 +1151,7 @@ const S = {
   recentlyStored: new Map(), // names stored this visit → the chip flips at once, whatever a listing says (2026-09-10)
   caTrust: null,           // the helper's verdict on the family root in this user's Root store
   registry: null,          // the helper's verdict on anonymous image pulls (public images need no token)
+  nasProbe: null,          // the helper's outside-in probe of the NAS hosts (NAS track)
   defaultBranch: null,     // the connected repo's default branch (workflows register from it)
   pollTimer: null,
 };
@@ -1434,6 +1441,8 @@ async function refresh() {
   S.runs = { iac: iacRuns?.workflow_runs ?? [], nas: nasRuns?.workflow_runs ?? [], native: [...(andRuns?.workflow_runs ?? []), ...(iosRuns?.workflow_runs ?? [])] };
   renderStatus();
   scheduleLivePoll();
+  // the NAS track's live view of the hosts (the local refresh never runs there)
+  refreshNasReadiness().catch(() => {});
 }
 
 function scheduleLivePoll() {
@@ -1676,6 +1685,75 @@ async function syncPipeline({ repo = null } = {}) {
   }
   if (!written) { msg('msg-connect', `Pipeline files match ${UPSTREAM} ✓ (workflows, deploy scripts, infra).`, true); return; }
   msg('msg-connect', `Pipeline synced from ${UPSTREAM}: ${names.length} file${names.length === 1 ? '' : 's'} (${names.map((p) => p.split('/').pop()).slice(0, 6).join(', ')}${names.length > 6 ? ', …' : ''}) written on ${branches.join(' + ')} ✓ — the copy's workflows and deploys now run the current pipeline.`, true);
+  refresh().catch(() => {});
+}
+
+/* ── NAS readiness (2026-09-10): the helper probes every reverse-proxy
+   host from outside and each answer names the one-time step still
+   missing — no DSM credential involved. The deploy account's own state
+   comes from the Synology tile's last Check. ── */
+let nasProbeAt = 0;
+async function refreshNasReadiness({ force = false } = {}) {
+  const card = document.getElementById('nas-ready');
+  if (!card) return;
+  const domain = (S.domain || '').trim();
+  const show = S.platform === 'nas' && Boolean(HELPER) && /^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(domain);
+  card.hidden = !show;
+  if (!show) return;
+  if (!force && Date.now() - nasProbeAt < 60000 && S.nasProbe) { renderNasReadiness(); return; }
+  nasProbeAt = Date.now();
+  try {
+    const res = await hfetch(`/api/local/nas-probe?domain=${encodeURIComponent(domain)}${force ? '&force=1' : ''}`);
+    S.nasProbe = res.ok ? await res.json() : null;
+  } catch { S.nasProbe = null; }
+  renderNasReadiness();
+}
+function renderNasReadiness() {
+  const list = document.getElementById('nas-ready-list');
+  const sub = document.getElementById('nas-ready-sub');
+  if (!list || !sub) return;
+  const p = S.nasProbe;
+  const v = S.verdicts.synology;
+  const rows = [];
+  const dot = (cls) => (cls === 'ok' ? 'ok' : (cls === 'bad' ? 'miss' : (cls === 'warn' ? 'warn' : 'opt')));
+  const row = (name, cls, label, title, jump) => rows.push({ name, cls, label, title, jump });
+  // 1. the deploy account — only the Synology tile's Check knows
+  if (v && !v.checking) row('Deploy account may use DSM', v.ok ? 'ok' : 'bad', v.ok ? 'DSM accepts the login ✓' : 'refused', v.detail, { href: '[data-group="synology"]' });
+  else row('Deploy account may use DSM', '', 'not checked yet', 'Manage → Check on the Synology tile', { href: '[data-group="synology"]' });
+  if (!p) { row('Hosts', '', 'probe pending', '', null); }
+  else {
+    const s = p.summary;
+    row(`Names resolve (*.${p.domain})`, s.dns ? 'ok' : 'bad', s.dns ? 'DNS ✓' : 'some names do not resolve', s.dns ? '' : 'Synology DDNS resolves *.<domain> by itself; an own domain needs a wildcard record', null);
+    const certKnown = p.stacks.flatMap((x) => x.hosts).some((h) => h.state !== 'no-dns' && h.state !== 'unreachable');
+    row(`Certificate covers *.${p.domain}`, !certKnown ? '' : (s.certificate ? 'ok' : 'bad'), !certKnown ? 'unknown' : (s.certificate ? 'wildcard certificate ✓' : 'certificate misses the hosts'), s.certificate ? '' : 'DSM → Control Panel → Security → Certificate → Add → Let’s Encrypt → the DDNS domain WITH the wildcard → set as default', null);
+    for (const st of p.stacks) {
+      // a host without the certificate still tells what sits behind it (the unverified second look)
+      const eff = (h) => (h.state === 'no-cert' && h.behind ? h.behind : h.state);
+      const rules = st.hosts.filter((h) => ['up', 'no-container'].includes(eff(h))).length;
+      const missing = st.hosts.filter((h) => eff(h) === 'no-rule').map((h) => h.host);
+      const behind = st.hosts.filter((h) => eff(h) === 'no-container').map((h) => h.host);
+      const ups = st.hosts.filter((h) => eff(h) === 'up').length;
+      row(`${st.stack}: reverse-proxy rules`, missing.length ? 'warn' : (rules ? 'ok' : ''), missing.length ? `${missing.length} of ${st.hosts.length} missing` : (rules ? `${rules} answer ✓` : 'unknown'), missing.length ? `no rule yet for ${missing.join(', ')} — Bootstrap writes them once the deploy account may use DSM` : '', { href: '#s-bootstrap' });
+      row(`${st.stack}: bundle applied`, behind.length ? 'warn' : (ups ? 'ok' : ''), behind.length ? `${behind.length} host${behind.length === 1 ? '' : 's'} answer 502` : (ups ? `${ups} host${ups === 1 ? '' : 's'} up ✓` : 'unknown'), behind.length ? `nothing behind ${behind.join(', ')} — create the Task Scheduler poller (below) and run Deploy; the poller applies within five minutes` : '', { href: '#s-deploy' });
+    }
+  }
+  list.innerHTML = rows.map((r) => `<li ${r.jump ? jumpAttr(r.jump) : ''} title="${escAttr(r.title ?? '')}"><span class="hn">${r.name}</span><span class="hs ${r.cls}"><i class="dot ${dot(r.cls)}"></i>${r.label}</span></li>`).join('');
+  applyIcons(document.getElementById('nas-ready'));
+  const open = rows.filter((r) => r.cls === 'bad' || r.cls === 'warn');
+  sub.textContent = !p ? 'probing the hosts from this machine…' : (open.length ? `${open.length} step${open.length === 1 ? '' : 's'} still open — hover a line for what to do` : 'every host answers with munni — the NAS is ready');
+}
+
+/* DSM accepting the deploy account is the moment Bootstrap can do its
+   NAS work (rules, and whatever else the DSM API allows) — run it for
+   both twins right away instead of asking for another click; it is
+   idempotent (user ruling 2026-09-10: automate what can be automated) */
+let bootstrapAutoAt = 0;
+async function bootstrapAfterSynology() {
+  if (S.platform !== 'nas' || !S.pat || !S.user) return;
+  if (Date.now() - bootstrapAutoAt < 10 * 60 * 1000) return; // once per ten minutes is plenty
+  bootstrapAutoAt = Date.now();
+  for (const stack of ['munni-iac-prod', 'munni-iac-staging']) await dispatch('iac.yml', { stack });
+  msg('msg-iac', 'DSM accepts the deploy account — Bootstrap dispatched for both twins (rules and the other DSM steps it can do); the runs appear above, the readiness card below tells what is left.', true);
   refresh().catch(() => {});
 }
 
@@ -2463,6 +2541,7 @@ async function refreshLocal() {
     ]);
     S.caTrust = trust;
     S.registry = registry;
+    refreshNasReadiness().catch(() => {});
     fillDynamicCopy();
     refreshAutonomy().then(renderTodo).catch(() => {});
     const shared = st.stacks[SHARED_STACK];
@@ -2788,6 +2867,7 @@ function renderCards() {
   wrap.querySelectorAll('[data-mirror="domain"]').forEach((input) => {
     if (!input.value && S.domain) input.value = S.domain;
     input.addEventListener('input', () => { S.domain = input.value.trim(); LS.set('domain', S.domain); applyDomain(); });
+    input.addEventListener('change', () => refreshNasReadiness({ force: true }).catch(() => {}));
   });
   applyDomain();
   renderStatus();
@@ -2861,6 +2941,7 @@ async function storeGroup(id) {
     try {
       const verdict = await checkCredentials(g.check, cardValues(card));
       if (verdict && !verdict.noHelper) { S.verdicts[g.id] = verdict; renderHealth(); }
+      if (g.id === 'synology') { renderNasReadiness(); if (verdict.ok) bootstrapAfterSynology().catch(() => {}); }
       if (verdict && !verdict.ok && !verdict.unreachable && !verdict.noHelper) {
         msg('msg-group-' + id, `✗ not stored — ${verdict.detail}`, false);
         storeBtn.dataset.force = '1';
@@ -2981,6 +3062,7 @@ async function checkGroup(id) {
   try {
     const verdict = await checkCredentials(g.check, cardValues(card));
     if (!verdict.noHelper) { S.verdicts[g.id] = verdict; renderHealth(); }
+    if (g.id === 'synology') { renderNasReadiness(); if (verdict.ok) bootstrapAfterSynology().catch(() => {}); }
     // a warning (credentials fine, a callback unregistered) reads as a to-do, not a pass
     const fine = verdict.ok && !verdict.warn;
     msg('msg-group-' + id, `${fine ? '✓' : (verdict.warn ? '⚠' : '✗')} ${verdict.detail}`, fine);
@@ -3014,6 +3096,7 @@ async function checkManifest() {
 const UPSTREAM = 'okkes/munnimok';
 document.getElementById('btn-check-all').addEventListener('click', () => checkAll().catch((e) => msg('msg-health', `✗ ${e.message}`, false)));
 document.getElementById('btn-feat-recommended').addEventListener('click', () => selectRecommended().catch(() => {}));
+document.getElementById('btn-nas-probe').addEventListener('click', () => refreshNasReadiness({ force: true }).catch(() => {}));
 document.getElementById('manage-close').addEventListener('click', dismissManage);
 document.getElementById('manage-dialog').addEventListener('cancel', (e) => { e.preventDefault(); dismissManage(); });
 document.getElementById('manage-dialog').addEventListener('click', (e) => { if (e.target === e.currentTarget) dismissManage(); });
