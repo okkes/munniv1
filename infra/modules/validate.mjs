@@ -295,7 +295,7 @@ export const VALIDATORS = {
   },
 
   /** a real DSM login + logout via the same module the bootstrap uses */
-  async synology(values) {
+  async synology(values, fetchImpl) {
     const gap = need(values, ['SYNOLOGY_URL', 'SYNOLOGY_USER', 'SYNOLOGY_PASS']);
     if (gap) return { ok: false, detail: gap };
     if (values.SYNOLOGY_PATH && !values.SYNOLOGY_PATH.startsWith('/')) return { ok: false, detail: `SYNOLOGY_PATH must be absolute — the shared-folder path bundles land in, e.g. /docker/munni/published (yours: ${values.SYNOLOGY_PATH})` };
@@ -304,8 +304,8 @@ export const VALIDATORS = {
       try { publishedPathParts(values.SYNOLOGY_PATH); } catch (e) { return { ok: false, detail: e.message }; }
     }
     try {
-      const { sid } = await dsmLogin(values.SYNOLOGY_URL, values.SYNOLOGY_USER, values.SYNOLOGY_PASS);
-      await dsmLogout(values.SYNOLOGY_URL, sid);
+      const { sid } = await dsmLogin(values.SYNOLOGY_URL, values.SYNOLOGY_USER, values.SYNOLOGY_PASS, fetchImpl);
+      await dsmLogout(values.SYNOLOGY_URL, sid, fetchImpl);
       return { ok: true, detail: 'DSM accepted the login (remember: the account needs admin rights, 2FA off)' };
     } catch (e) {
       if (isTransport(e)) return { ok: false, unreachable: true, detail: `could not reach DSM at ${values.SYNOLOGY_URL} (${e.message}) — is the NAS up, the port right, the firewall open for this machine?` };
