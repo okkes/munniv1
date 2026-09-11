@@ -109,6 +109,13 @@ jobs:
           SYNOLOGY_PATH: ${{ secrets.SYNOLOGY_PATH }}
           # Let's Encrypt contact for the wildcard certificate DSM requests (optional)
           IAC_ACME_EMAIL: ${{ secrets.IAC_ACME_EMAIL }}
+      - name: Upload rendered stack + runbook
+        uses: actions/upload-artifact@v7
+        with:
+          name: iac-${{ matrix.stack }}-${{ github.run_number }}
+          path: infra/rendered/${{ matrix.stack }}/
+          retention-days: 30
+      # LAST: a chain that cannot be dispatched must not cost the runbook above
       - name: Chain the next run
         # the wizard dispatches the prod twin with chain=staging,deploy-both:
         # staging follows (it binds its rules to the certificate prod just
@@ -135,9 +142,3 @@ jobs:
           esac
         env:
           GH_TOKEN: ${{ secrets.IAC_GH_PAT || secrets.GITHUB_TOKEN }}
-      - name: Upload rendered stack + runbook
-        uses: actions/upload-artifact@v7
-        with:
-          name: iac-${{ matrix.stack }}-${{ github.run_number }}
-          path: infra/rendered/${{ matrix.stack }}/
-          retention-days: 30
