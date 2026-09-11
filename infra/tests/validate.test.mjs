@@ -145,6 +145,22 @@ test('synology: DSM error codes come with advice; a relative path is refused bef
   const rel = await validate('synology', { SYNOLOGY_URL: 'https://nas.example:5001', SYNOLOGY_USER: 'deploy', SYNOLOGY_PASS: 'x', SYNOLOGY_PATH: 'docker/munni/published' });
   assert.equal(rel.ok, false);
   assert.match(rel.detail, /must be absolute/);
+  // the live dir (apply.sh, the poller) is the PARENT of this path: a share root has none
+  const root = await validate('synology', { SYNOLOGY_URL: 'https://nas.example:5001', SYNOLOGY_USER: 'deploy', SYNOLOGY_PASS: 'x', SYNOLOGY_PATH: '/docker' });
+  assert.equal(root.ok, false);
+  assert.match(root.detail, /inside a shared folder/);
+});
+
+test('synology: a DSM that never answers reads as unreachable (stored with a warning); a DSM-answered code is a refusal', async () => {
+  const vals = { SYNOLOGY_URL: 'https://nas.example:5001', SYNOLOGY_USER: 'deploy', SYNOLOGY_PASS: 'x', SYNOLOGY_PATH: '/docker/munni/published' };
+  const down = await validate('synology', vals, { fetchImpl: async () => { const e = new TypeError('fetch failed'); e.cause = { code: 'ECONNREFUSED' }; throw e; } });
+  assert.equal(down.ok, false);
+  assert.equal(down.unreachable, true, 'the wizard stores with a note instead of demanding "Store anyway"');
+  assert.match(down.detail, /could not reach DSM.*ECONNREFUSED/);
+  const refused = await validate('synology', vals, { fetchImpl: async () => ({ status: 200, json: async () => ({ success: false, error: { code: 402 } }) }) });
+  assert.equal(refused.ok, false);
+  assert.ok(!refused.unreachable, 'a DSM answer is a refusal, not an outage');
+  assert.match(refused.detail, /code 402: the DSM application is denied/);
 });
 
 test('ghcr: the registry token must authenticate AND carry read:packages', async () => {
