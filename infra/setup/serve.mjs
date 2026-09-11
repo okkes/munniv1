@@ -678,10 +678,23 @@ export function nasHosts(domain) {
     if (prev === undefined) delete process.env.IAC_DOMAIN; else process.env.IAC_DOMAIN = prev;
   }
 }
-const NAS_CERT_CODES = new Set(['UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID']);
+// every way node can say "the certificate itself is the problem": each one
+// means the rule behind it is still readable unverified (the second look)
+const NAS_CERT_CODES = new Set(['UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'CERT_UNTRUSTED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'ERR_TLS_CERT_ALTNAME_INVALID']);
 /** what answers on the host: a rule (munni or a 502 behind it) or DSM itself */
-/** DSM's own front door: its ports, or its web app's path */
-const DSM_PORTAL = /^https?:\/\/[^/]+:(5000|5001)(\/|$)|\/webman\//i;
+/** DSM's own front door: its web app's path, or — the shape its default
+ * server uses for an unmatched host — a redirect to THIS host on another
+ * port (DSM's own, :5001 unless the operator moved it). The apps behind
+ * the rules only ever redirect inside their own origin. */
+function isDsmPortal(host, location) {
+  if (!location) return false;
+  if (/\/webman\//i.test(location)) return true;
+  try {
+    const u = new URL(location, `https://${host}/`);
+    // new URL() normalises an explicit :443 away, so an app's own redirect stays "up"
+    return u.hostname.toLowerCase() === String(host).toLowerCase() && u.port !== '' && u.port !== '443';
+  } catch { return false; }
+}
 async function classifyNasAnswer(host, fetchImpl) {
   const res = await fetchImpl(`https://${host}/`, { redirect: 'manual', signal: AbortSignal.timeout(10000) });
   const text = res.status < 400 && typeof res.text === 'function' ? String(await res.text()).slice(0, 6000) : '';
@@ -689,7 +702,7 @@ async function classifyNasAnswer(host, fetchImpl) {
   if (/Synology Web Station/i.test(text)) return noRule('DSM answers with Web Station’s welcome page');
   // without Web Station, DSM's default server sends an unmatched host to its own portal (:5001, /webman/)
   const location = res.status >= 300 && res.status < 400 ? String(res.headers?.get?.('location') ?? '') : '';
-  if (location && DSM_PORTAL.test(location)) return noRule(`DSM redirects to its own portal (${location})`);
+  if (isDsmPortal(host, location)) return noRule(`DSM redirects to its own portal (${location})`);
   if (/DiskStation|SYNO\.SDS|\/webman\//i.test(text)) return noRule('DSM’s own portal answers');
   if ([502, 503, 504].includes(res.status)) return { state: 'no-container', detail: `the rule exists but nothing answers behind it (${res.status}) — no bundle applied yet: Bootstrap (prod twin) creates the poller task when SYNOLOGY_PATH is stored, Deploy uploads the bundle, the poller applies it within five minutes` };
   return { state: 'up', detail: `answers (${res.status})` };
