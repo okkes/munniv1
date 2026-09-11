@@ -278,28 +278,51 @@ export async function bindRulesToCertificate(s, { certId, hosts }) {
   for (const [uuid, host] of uuidHost) {
     if (!seen.has(uuid)) settings.push({ service: { display_name: host, isPkg: false, multiple_cert: true, owner: 'root', service: uuid, subscriber: 'ReverseProxy', user_setable: true }, old_id: '', id: certId });
   }
-  if (settings.length) await s.call('SYNO.Core.Certificate.Service', 1, 'set', { settings: JSON.stringify(settings) });
+  if (settings.length) {
+    try {
+      await s.call('SYNO.Core.Certificate.Service', 1, 'set', { settings: JSON.stringify(settings) });
+    } catch (e) {
+      // a binding change answers restart_httpd too: the answer may be lost
+      // to the web-server restart — the (retried) list says whether it landed
+      if (!isTransport(e)) throw e;
+      const onTarget = new Set(((await listCerts(s)).find((c) => c.id === certId)?.services ?? []).filter((x) => x.subscriber === 'ReverseProxy').map((x) => x.service));
+      if (!settings.every((x) => onTarget.has(x.service.service))) throw e;
+    }
+  }
   const known = [...uuidHost.values()];
   return { bound: uuidHost.size, migrated: settings.map((x) => uuidHost.get(x.service.service)), unbound: hosts.filter((h) => !known.includes(h)) };
 }
 
+/** what DSM's own wizard waits for its Let's Encrypt call (its UI: six minutes) */
+export const LE_WAIT_MS = 360000;
+
 /**
  * Make DSM serve a certificate that covers *.<domain> on the given hosts.
- * Probe first (a covered host means nothing to do — never spends a Let's
- * Encrypt request); otherwise DSM's certificate list decides (a probe
- * that cannot tell — DNS down, a runner DSM blocks — is not a reason to
- * stop): reuse a valid wildcard certificate DSM already holds (set it
- * default), else — as the owner — request one through DSM's own Let's
- * Encrypt wizard call; then bind the hosts' rules to it. An expired
- * wildcard counts as absent. Returns {state, ...}: covered | present |
- * set-default | created | pending | absent (a non-owner waiting for the
- * prod twin's request).
+ * EVERY host is probed first (a covered set means nothing to request —
+ * never spends a Let's Encrypt request); otherwise DSM's certificate list
+ * decides (a probe that cannot tell — DNS down, a runner DSM blocks — is
+ * not a reason to stop): reuse a valid wildcard certificate DSM already
+ * holds (set it default), else — as the owner — request one through DSM's
+ * own Let's Encrypt wizard call; either way the hosts' rules are bound to
+ * it, because a rule keeps the certificate it was created with (so a
+ * covered web host is no proof the other rules are on the wildcard). An
+ * expired wildcard counts as absent. Returns {state, ...}: covered |
+ * present | set-default | created | absent (a non-owner waiting for the
+ * prod twin's request); a request DSM never answered throws after the
+ * wait, so the run is red and nothing is chained onto it.
  */
-export async function ensureWildcardCertificate(creds, { domain, probeHost, email, hosts = [], owner = true, fetchImpl = fetch, probeImpl = null, sleepImpl = sleep } = {}) {
-  const target = probeHost ?? domain;
-  const probe = await (probeImpl ?? ((h) => tlsCovers(h, fetchImpl)))(target);
-  if (probe.covers === true) return { state: 'covered', detail: `the certificate DSM serves covers ${target}` };
-  const why = probe.covers === null ? `could not probe ${target} (${probe.code}) — DSM's certificate list decides` : `${target} is not covered (${probe.code})`;
+export async function ensureWildcardCertificate(creds, { domain, probeHost, email, hosts = [], owner = true, fetchImpl = fetch, probeImpl = null, sleepImpl = sleep, pollMs = 15000, pollTries = 24 } = {}) {
+  const probeOne = probeImpl ?? ((h) => tlsCovers(h, fetchImpl));
+  const targets = [...new Set([probeHost ?? domain, ...hosts])];
+  const probes = await Promise.all(targets.map(async (h) => [h, await probeOne(h)]));
+  const allCovered = probes.every(([, p]) => p.covers === true);
+  // covered and no rules to bind → nothing to do at all (not even a login)
+  if (allCovered && !hosts.length) return { state: 'covered', detail: `the certificate DSM serves covers ${targets.join(', ')}` };
+  // the host that decides the story: the first provably uncovered one, else the first unprobeable one
+  const [target, probe] = probes.find(([, p]) => p.covers === false) ?? probes.find(([, p]) => p.covers !== true) ?? probes[0];
+  const why = allCovered
+    ? `the certificate DSM serves covers all ${targets.length} host${targets.length === 1 ? '' : 's'}`
+    : (probe.covers === null ? `could not probe ${target} (${probe.code}) — DSM's certificate list decides` : `${target} is not covered (${probe.code})`);
   const s = await dsmSession(creds, fetchImpl, { sleepImpl });
   try {
     const names = `${domain};*.${domain}`;
@@ -328,8 +351,12 @@ export async function ensureWildcardCertificate(creds, { domain, probeHost, emai
       }
       return { state: 'present', id: c.id, detail: `${why}; DSM holds a valid wildcard certificate (${c.id}, default)${await bindNote(c.id)}${probe.covers === false ? '; if the hosts still fail TLS in a minute, DSM has not reloaded yet' : ''}` };
     }
+    // every host is served a certificate that covers it (an own-domain
+    // multi-SAN one, say): a request would spend a Let's Encrypt slot for nothing
+    if (allCovered) return { state: 'covered', detail: `${why}; DSM lists no wildcard certificate, so the rules stay on the one that covers them` };
     if (!owner) return { state: 'absent', detail: `${why}; no valid wildcard certificate on DSM yet — the prod twin's bootstrap requests it (one per NAS); this twin binds its rules on its next run` };
     const gone = expired.length ? ` (the wildcard DSM held, ${newest(expired).id}, expired ${newest(expired).valid_till})` : '';
+    const started = Date.now();
     try {
       // DSM's wizard call is synchronous and slow (its own UI waits six minutes)
       await s.call('SYNO.Core.Certificate.LetsEncrypt', 1, 'create', {
@@ -337,18 +364,28 @@ export async function ensureWildcardCertificate(creds, { domain, probeHost, emai
         domain_name: JSON.stringify(names),
         email: JSON.stringify(email),
         as_default: 'true',
-      }, { timeoutMs: 360000 });
+      }, { timeoutMs: LE_WAIT_MS });
     } catch (e) {
-      // only a request DSM never answered is looked up again — a request
-      // DSM refused (rate limit 5524, validation 5503) is final and must
-      // NOT be repeated: every request counts against the rate limit
+      // only a request DSM never answered is waited out — a request DSM
+      // refused (rate limit 5524, validation 5503) is final and must NOT be
+      // repeated: every request counts against the rate limit
       if (!isTransport(e)) throw e;
-      const later = wild(await listCerts(s).catch(() => [])).filter((c) => certValid(c));
+      // DSM answering 504 means the request is STILL RUNNING (its own UI
+      // says so), so one immediate list always comes back empty: poll the
+      // list for the rest of the six minutes instead of deciding too early
+      let later = [];
+      for (let i = 0; ; i++) {
+        later = wild(await listCerts(s).catch(() => [])).filter((c) => certValid(c));
+        if (later.length || i >= pollTries || Date.now() - started >= LE_WAIT_MS) break;
+        await sleepImpl(pollMs);
+      }
       if (later.length) {
         const c = newest(later);
         return { state: 'created', id: c.id, detail: `${why}; Let's Encrypt certificate for ${names} arrived (the request outlived the wait: ${e.message})${gone}${await bindNote(c.id)}` };
       }
-      return { state: 'pending', detail: `${why}; the Let's Encrypt request for ${names} is still running on the NAS (${e.message}) — check Control Panel → Security → Certificate in a few minutes; do not re-request; the next bootstrap run binds the rules` };
+      // not done: a green run here would chain Deploy over rules that still
+      // serve the old certificate — fail, and let the next run pick it up
+      throw new Error(`the Let's Encrypt request for ${names} is still running on the NAS after the wait (${e.message}) — check Control Panel → Security → Certificate; the next bootstrap run adopts it and binds the rules, so never re-request by hand (5 requests per name set per week)`);
     }
     const c = newest(wild(await listCerts(s).catch(() => [])).filter((x) => certValid(x)));
     return { state: 'created', id: c?.id ?? null, detail: `${why}; Let's Encrypt certificate for ${names} requested through DSM and set as default${gone}${c ? await bindNote(c.id) : ''}; DSM restarts its web server, the hosts serve it within a minute` };
