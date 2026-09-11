@@ -1749,21 +1749,31 @@ function renderNasReadiness() {
    both twins right away instead of asking for another click; it is
    idempotent (user ruling 2026-09-10: automate what can be automated) */
 let bootstrapAutoAt = 0;
+const SYNOLOGY_SECRETS = ['SYNOLOGY_URL', 'SYNOLOGY_USER', 'SYNOLOGY_PASS', 'SYNOLOGY_PATH'];
+/** returns {dispatched, reason} — the reason is shown where the user is
+ *  looking (the tile's own box on a Check, the step-4 box on a Store) */
 async function bootstrapAfterSynology() {
-  if (S.platform !== 'nas' || !S.pat || !S.user) return false;
-  if (Date.now() - bootstrapAutoAt < 10 * 60 * 1000) return false; // once per ten minutes is plenty
+  if (S.platform !== 'nas') return { dispatched: false, reason: '' };
+  if (!S.pat || !S.user) return { dispatched: false, reason: 'connect GitHub first (the GitHub tile) — then Store here and Bootstrap runs itself' };
+  // the run reads SYNOLOGY_* from GitHub: a green Check on values that are
+  // only typed must NOT dispatch — the Store that follows does it
+  if (!SYNOLOGY_SECRETS.every((n) => secretPresent(n, true))) return { dispatched: false, reason: 'press Store: the run reads these values from GitHub, so Bootstrap follows the Store by itself' };
+  if (Date.now() - bootstrapAutoAt < 10 * 60 * 1000) return { dispatched: false, reason: '' }; // once per ten minutes is plenty
+  // claim the slot BEFORE the await: two green verdicts in the same tick
+  // (Check all + the tile's Check, a double-clicked Store) must dispatch once
+  bootstrapAutoAt = Date.now();
   try {
     // prod first — it owns the certificate, the live dir and the poller;
     // the run itself chains the staging twin and then Deploy for both
     // (iac.yml `chain`), so the order is guaranteed and no click is left
     await dispatch('iac.yml', { stack: 'munni-iac-prod', chain: 'staging,deploy-both' });
-    bootstrapAutoAt = Date.now();
     msg('msg-iac', 'DSM accepts the deploy account — Bootstrap dispatched for munni-iac-prod (rules, certificate, live dir, poller); it chains the staging twin and then Deploy for both. The runs appear above, the readiness card below tells what is left.', true);
     setTimeout(() => refresh().catch(() => {}), 3000);
-    return true;
+    return { dispatched: true, reason: 'Bootstrap dispatched for munni-iac-prod — it chains the staging twin and then Deploy for both (step 4)' };
   } catch (e) {
+    bootstrapAutoAt = 0; // a failed dispatch must not swallow the next verdict
     msg('msg-iac', `Bootstrap could not be dispatched by itself (${e.message}) — press Bootstrap under step 4 once the cause is fixed.`, false);
-    return false;
+    return { dispatched: false, reason: `Bootstrap could not be dispatched (${e.message}) — press Bootstrap under step 4` };
   }
 }
 
@@ -1823,10 +1833,14 @@ async function checkAll() {
     // secrets never come back, so those stay "Configured"; the registry
     // token has a helper-side twin that reads the store
     const provider = g.check === 'browser:ghcr' && HELPER ? 'ghcr' : g.check;
-    if (provider.startsWith('browser:') && !Object.keys(values).length) return null;
+    // nothing typed: only the LOCAL track can answer from the machine store.
+    // On the NAS track stored values never come back (they are write-only in
+    // GitHub), so such a check could only say "missing: …" and would replace
+    // the tile's real verdict — and with it the readiness card's first row
+    if (!Object.keys(values).length && (provider.startsWith('browser:') || S.platform !== 'local')) return null;
     return { g, provider, values };
   }).filter(Boolean);
-  if (!jobs.length) { msg('msg-health', HELPER ? 'Nothing to check yet — save an integration first.' : 'Providers block browser calls — start the local helper (infra\\setup\\start.cmd) and Check all asks each of them for real.', Boolean(HELPER)); return; }
+  if (!jobs.length) { msg('msg-health', !HELPER ? 'Providers block browser calls — start the local helper (infra\\setup\\start.cmd) and Check all asks each of them for real.' : (S.platform === 'nas' ? 'Stored values are write-only in GitHub — open a tile, type the values and press Check there to re-verify.' : 'Nothing to check yet — save an integration first.'), Boolean(HELPER)); return; }
   btn.disabled = true;
   jobs.forEach(({ g }) => { S.verdicts[g.id] = { checking: true }; });
   renderHealth();
@@ -1842,7 +1856,13 @@ async function checkAll() {
     renderHealth();
   }));
   // the readiness card follows the Synology verdict too, and a passing one runs Bootstrap by itself
-  if (jobs.some(({ g }) => g.id === 'synology')) { renderNasReadiness(); if (S.verdicts.synology?.ok) bootstrapAfterSynology().catch(() => {}); }
+  if (jobs.some(({ g }) => g.id === 'synology')) {
+    renderNasReadiness();
+    if (S.verdicts.synology?.ok) {
+      const b = await bootstrapAfterSynology().catch((e) => ({ dispatched: false, reason: e.message }));
+      if (b.reason) msg('msg-group-synology', `${b.dispatched ? '✓' : '⚠'} ${S.verdicts.synology.detail} — ${b.reason}`, b.dispatched);
+    }
+  }
   const bad = jobs.filter(({ g }) => !S.verdicts[g.id]?.ok).length;
   const warn = jobs.filter(({ g }) => S.verdicts[g.id]?.ok && S.verdicts[g.id]?.warn).length;
   msg('msg-health', `Checked ${jobs.length} integration${jobs.length === 1 ? '' : 's'}: ${jobs.length - bad - warn} fine${warn ? `, ${warn} need attention` : ''}${bad ? `, ${bad} failed` : ''} — every tile carries its verdict.`, !bad);
@@ -3081,10 +3101,18 @@ async function checkGroup(id) {
   try {
     const verdict = await checkCredentials(g.check, cardValues(card));
     if (!verdict.noHelper) { S.verdicts[g.id] = verdict; renderHealth(); }
-    if (g.id === 'synology') { renderNasReadiness(); if (verdict.ok) bootstrapAfterSynology().catch(() => {}); }
     // a warning (credentials fine, a callback unregistered) reads as a to-do, not a pass
     const fine = verdict.ok && !verdict.warn;
     msg('msg-group-' + id, `${fine ? '✓' : (verdict.warn ? '⚠' : '✗')} ${verdict.detail}`, fine);
+    if (g.id === 'synology') {
+      renderNasReadiness();
+      // the Bootstrap that follows a green check says what it did (or why
+      // it did not) right here — the popup stays open over the step-4 box
+      if (verdict.ok) {
+        const b = await bootstrapAfterSynology().catch((e) => ({ dispatched: false, reason: e.message }));
+        if (b.reason) msg('msg-group-' + id, `${b.dispatched ? '✓' : '⚠'} ${verdict.detail} — ${b.reason}`, b.dispatched);
+      }
+    }
   } catch (e) {
     msg('msg-group-' + id, `✗ check failed: ${e.message}`, false);
   } finally {
