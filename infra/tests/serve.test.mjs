@@ -1488,6 +1488,10 @@ test('nas-probe: every host names the one-time step it is missing — dns, wildc
     if (/^https:\/\/logto-iac\.nas\.example\//.test(url)) return { status: 302, headers: { get: (k) => (k === 'location' ? 'https://logto-iac.nas.example/sign-in' : null) }, text: async () => '' };
     // no Web Station: DSM's default server sends an unmatched host to its own portal
     if (/^https:\/\/glitchtip-iac\.nas\.example\//.test(url)) return { status: 302, headers: { get: (k) => (k === 'location' ? 'https://glitchtip-iac.nas.example:5001/' : null) }, text: async () => '' };
+    // …the same on a DSM whose port was moved off 5001
+    if (/^https:\/\/munni-iac-test\.nas\.example\//.test(url)) return { status: 302, headers: { get: (k) => (k === 'location' ? 'https://munni-iac-test.nas.example:8443/' : null) }, text: async () => '' };
+    // …and DSM's portal by path (the /webman/ form)
+    if (/^https:\/\/munni-iac-test-api\.nas\.example\//.test(url)) return { status: 302, headers: { get: (k) => (k === 'location' ? '/webman/index.cgi' : null) }, text: async () => '' };
     if (/^https:\/\/logto-iac-admin\.nas\.example\//.test(url)) return { status: 200, text: async () => '<html><script>SYNO.SDS.Session</script></html>' };
     if (/^https:\/\/vault-iac\.nas\.example\//.test(url)) throw tlsErr('ENOTFOUND');
     return { status: 200, text: async () => '<html><title>munni</title></html>' };
@@ -1518,6 +1522,10 @@ test('nas-probe: every host names the one-time step it is missing — dns, wildc
   assert.match(prod.glitchtip.detail, /portal/);
   assert.equal(prod.logtoAdmin.state, 'no-rule', 'DSM’s page behind a 200 is no rule either');
   assert.equal(prod.vault.state, 'no-dns');
+  const staging = Object.fromEntries(body.stacks[1].hosts.map((h) => [h.key, h]));
+  assert.equal(staging.web.state, 'no-rule', 'DSM on a moved port is still DSM, not a live host');
+  assert.match(staging.web.detail, /portal/);
+  assert.equal(staging.api.state, 'no-rule', 'DSM’s /webman/ path is its portal too');
   assert.equal(body.summary.certificate, false);
   assert.equal(body.summary.dns, false);
   assert.ok(body.summary.rulesMissing >= 1);
