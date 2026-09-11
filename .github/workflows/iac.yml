@@ -37,13 +37,17 @@ jobs:
     # wizard marks the repo initialized (variable MUNNI_INITIALIZED)
     if: ${{ vars.MUNNI_INITIALIZED == 'true' }}
     runs-on: ubuntu-latest
-    # one run per stack at a time — two applies of the same stack must
-    # never race (list-before-create). The twins keep separate groups:
-    # the prod twin owns the NAS-wide pieces (certificate, live dir,
-    # poller), so they never race for a Let's Encrypt request either.
+    # one APPLY per stack at a time — two applies of the same stack must
+    # never race (list-before-create). The twins keep separate groups: the
+    # prod twin owns the NAS-wide pieces (certificate, live dir, poller),
+    # so they never race for a Let's Encrypt request either. Verifies write
+    # nothing and get their OWN group: GitHub keeps only the NEWEST pending
+    # run per group, so a verify queued by the next infra push (or by the
+    # wizard's per-file pipeline sync) would otherwise cancel a pending
+    # apply — and with it the whole chain — silently.
     concurrency:
-      group: iac-${{ matrix.stack }}
-      cancel-in-progress: false
+      group: iac-${{ matrix.stack }}-${{ (github.event_name == 'push' || inputs.verify_only == true) && 'verify' || 'apply' }}
+      cancel-in-progress: ${{ github.event_name == 'push' || inputs.verify_only == true }}
     strategy:
       matrix:
         stack: ${{ github.event_name == 'push' && fromJSON('["munni-iac-prod","munni-iac-staging"]') || fromJSON(format('["{0}"]', inputs.stack)) }}
